@@ -44,6 +44,12 @@ struct Args {
     #[arg(long = "path", value_name = "SUBSTR[,SUBSTR]...")]
     path: Option<String>,
 
+    /// Internet/socket filter, lsof-style: `-i` (any inet), `-i tcp`,
+    /// `-i :443`, `-i tcp:443`, `-i @127.0.0.1:8080`, `-i unix`
+    #[arg(short = 'i', long = "inet", value_name = "[PROTO][:PORT][@ADDR]",
+          num_args = 0..=1, default_missing_value = "")]
+    inet: Option<String>,
+
     /// Only files that were deleted while still open (reclaimable disk space)
     #[arg(short = 'd', long = "deleted")]
     deleted: bool,
@@ -111,6 +117,12 @@ fn main() -> ExitCode {
     }
     if let Some(spec) = &args.path {
         filters.set_paths(spec);
+    }
+    if let Some(spec) = &args.inet
+        && let Err(e) = filters.set_inet(spec)
+    {
+        eprintln!("openfd: {e}");
+        return ExitCode::from(2);
     }
     if args.deleted {
         filters.set_deleted();

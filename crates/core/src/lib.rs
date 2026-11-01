@@ -18,7 +18,10 @@ pub mod scanner;
 pub mod sockdiag;
 pub mod types;
 
-pub use types::{Backend, FdEntry, FdKind, FdSink, ProcessInfo, ScanOptions};
+pub use types::{
+    AddrFamily, Backend, FdEntry, FdKind, FdSink, ProcessInfo, ScanOptions, SockAddr, SockInfo,
+    SockProto,
+};
 
 /// The backend for the current platform.
 pub fn default_backend() -> Box<dyn Backend> {

@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
-use openfd_core::{FdEntry, ProcessInfo};
+use openfd_core::{AddrFamily, FdEntry, ProcessInfo, SockAddr, SockInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -13,6 +13,62 @@ pub enum Format {
     Terse,
     Json,
     Csv,
+}
+
+/// Socket details sub-object for the JSON format.
+#[derive(Debug, Serialize)]
+pub struct SockRow {
+    proto: &'static str,
+    family: &'static str,
+    local: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<&'static str>,
+}
+
+fn family_tag(f: &AddrFamily) -> &'static str {
+    match f {
+        AddrFamily::V4 => "ipv4",
+        AddrFamily::V6 => "ipv6",
+        AddrFamily::Unix => "unix",
+    }
+}
+
+fn sock_addr_string(a: &SockAddr) -> String {
+    match a {
+        SockAddr::Inet { addr, port } => format!("{addr}:{port}"),
+        SockAddr::Unix(path) => path.clone(),
+    }
+}
+
+fn sock_row(sock: &SockInfo) -> SockRow {
+    SockRow {
+        proto: sock.proto.tag(),
+        family: family_tag(&sock.family),
+        local: sock_addr_string(&sock.local),
+        remote: sock.remote.as_ref().map(sock_addr_string),
+        state: sock.state,
+    }
+}
+
+/// Human-readable socket endpoint string for the table/CSV TARGET column.
+fn sock_target_string(sock: &SockInfo) -> String {
+    match (&sock.remote, sock.state) {
+        (Some(remote), Some(state)) => format!(
+            "{}->{} ({})",
+            sock_addr_string(&sock.local),
+            sock_addr_string(remote),
+            state
+        ),
+        (Some(remote), None) => format!(
+            "{}->{}",
+            sock_addr_string(&sock.local),
+            sock_addr_string(remote)
+        ),
+        (None, Some(state)) => format!("{} ({})", sock_addr_string(&sock.local), state),
+        (None, None) => sock_addr_string(&sock.local),
+    }
 }
 
 /// One output row, used by the JSON format.
@@ -35,6 +91,27 @@ pub struct Row<'a> {
     flags: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inode: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sock: Option<SockRow>,
+}
+
+/// TYPE column: transport tag for resolved sockets, fd-kind tag otherwise.
+fn display_kind(entry: &FdEntry) -> &'static str {
+    match &entry.sock {
+        Some(sock) => sock.proto.tag(),
+        None => entry.kind.tag(),
+    }
+}
+
+/// TARGET column: socket endpoints for resolved sockets, path otherwise.
+fn display_target(entry: &FdEntry) -> String {
+    if let Some(sock) = &entry.sock {
+        sock_target_string(sock)
+    } else if entry.deleted {
+        format!("{} (deleted)", entry.target)
+    } else {
+        entry.target.clone()
+    }
 }
 
 fn user_of(info: &ProcessInfo) -> String {
@@ -58,6 +135,7 @@ fn row<'a>(info: &'a ProcessInfo, entry: &'a FdEntry) -> Row<'a> {
         pos: entry.pos,
         flags: entry.flags.map(|f| format!("{f:#o}")),
         inode: entry.inode,
+        sock: entry.sock.as_ref().map(sock_row),
     }
 }
 
@@ -129,12 +207,12 @@ impl Printer {
                         &info.pid.to_string(),
                         &user_of(info),
                         &entry.fd.to_string(),
-                        entry.kind.tag(),
+                        display_kind(entry),
                         &entry.size.map(|s| s.to_string()).unwrap_or_default(),
                         &entry.pos.map(|p| p.to_string()).unwrap_or_default(),
                         &entry.flags.map(|f| format!("{f:#o}")).unwrap_or_default(),
                         &entry.deleted.to_string(),
-                        &entry.target,
+                        &display_target(entry),
                     ]);
                 }
             }
@@ -174,11 +252,7 @@ impl Printer {
 
     fn write_table_row(&self, info: &ProcessInfo, entry: &FdEntry) {
         let mut out = io::stdout().lock();
-        let target = if entry.deleted {
-            format!("{} (deleted)", entry.target)
-        } else {
-            entry.target.clone()
-        };
+        let target = display_target(entry);
         if self.sizes {
             let size = entry
                 .size
@@ -191,7 +265,7 @@ impl Printer {
                 pid = info.pid,
                 user = user_of(info),
                 fd = entry.fd,
-                kind = entry.kind.tag(),
+                kind = display_kind(entry),
             );
         } else {
             let _ = writeln!(
@@ -201,7 +275,7 @@ impl Printer {
                 pid = info.pid,
                 user = user_of(info),
                 fd = entry.fd,
-                kind = entry.kind.tag(),
+                kind = display_kind(entry),
             );
         }
     }

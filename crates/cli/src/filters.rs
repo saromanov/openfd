@@ -1,8 +1,119 @@
 //! Argument parsing and filters for the openfd CLI.
 
 use std::collections::HashSet;
+use std::net::IpAddr;
 
-use openfd_core::{FdEntry, ProcessInfo};
+use openfd_core::{FdEntry, ProcessInfo, SockAddr, SockInfo, SockProto};
+
+/// Parsed `-i` filter: lsof-style `[proto][:port][@addr]`, restricted to
+/// literal IPs (no DNS - openfd performs no network access).
+#[derive(Debug, Default, Clone)]
+pub struct InetFilter {
+    proto: Option<SockProto>,
+    port: Option<u16>,
+    addr: Option<IpAddr>,
+    unix: bool,
+}
+
+impl InetFilter {
+    /// `""` = any internet socket (like bare lsof `-i`).
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut f = InetFilter::default();
+        if spec.is_empty() {
+            return Ok(f);
+        }
+        let mut rest = spec;
+        if let Some(r) = rest.strip_prefix("tcp") {
+            f.proto = Some(SockProto::Tcp);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("udp") {
+            f.proto = Some(SockProto::Udp);
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("unix") {
+            f.unix = true;
+            rest = r;
+        }
+        if f.unix {
+            if rest.starts_with(':') || rest.starts_with('@') {
+                return Err("unix sockets accept only `unix` (no port/addr)".to_string());
+            }
+            if !rest.is_empty() {
+                return Err(format!("unsupported -i suffix: {rest}"));
+            }
+            return Ok(f);
+        }
+        if rest.is_empty() {
+            return Ok(f);
+        }
+        // optional @addr then optional :port (lsof order), but also accept
+        // :port without addr ("tcp:443")
+        if let Some(r) = rest.strip_prefix('@') {
+            let (host, tail) = match r.split_once(':') {
+                Some((h, t)) => (h, Some(t)),
+                None => (r, None),
+            };
+            if host.is_empty() {
+                return Err("empty address after '@'".to_string());
+            }
+            f.addr = Some(
+                host.parse()
+                    .map_err(|_| format!("not a literal IP: {host}"))?,
+            );
+            rest = tail.unwrap_or("");
+        }
+        if let Some(port_str) = rest.strip_prefix(':') {
+            f.port = Some(
+                port_str
+                    .parse()
+                    .map_err(|_| format!("invalid port: {port_str}"))?,
+            );
+            rest = "";
+        }
+        if !rest.is_empty() {
+            return Err(format!("unsupported -i syntax: {spec}"));
+        }
+        Ok(f)
+    }
+
+    fn matches_sock(&self, sock: &SockInfo) -> bool {
+        if self.unix {
+            return sock.proto == SockProto::Unix;
+        }
+        if sock.proto == SockProto::Unix {
+            return false;
+        }
+        if let Some(p) = self.proto
+            && sock.proto != p
+        {
+            return false;
+        }
+        if let Some(want_port) = self.port {
+            let port_hit = match &sock.local {
+                SockAddr::Inet { port, .. } => *port == want_port,
+                _ => false,
+            } || sock.remote.as_ref().is_some_and(|r| match r {
+                SockAddr::Inet { port, .. } => *port == want_port,
+                _ => false,
+            });
+            if !port_hit {
+                return false;
+            }
+        }
+        if let Some(want_addr) = self.addr {
+            let addr_hit = match &sock.local {
+                SockAddr::Inet { addr, .. } => *addr == want_addr,
+                _ => false,
+            } || sock.remote.as_ref().is_some_and(|r| match r {
+                SockAddr::Inet { addr, .. } => *addr == want_addr,
+                _ => false,
+            });
+            if !addr_hit {
+                return false;
+            }
+        }
+        true
+    }
+}
 
 /// Subset of the lsof 80/20 flag surface, AND-composed between groups,
 /// OR-composed inside one group (like lsof).
@@ -14,6 +125,7 @@ pub struct Filters {
     paths: Vec<String>,
     fds: HashSet<i32>,
     only_deleted: bool,
+    inet: Option<InetFilter>,
 }
 
 impl Filters {
@@ -42,6 +154,12 @@ impl Filters {
         }
         if !self.paths.is_empty() && !self.paths.iter().any(|p| entry.target.contains(p)) {
             return false;
+        }
+        if let Some(inet) = &self.inet {
+            match &entry.sock {
+                Some(sock) if inet.matches_sock(sock) => {}
+                _ => return false,
+            }
         }
         true
     }
@@ -97,6 +215,11 @@ impl Filters {
 
     pub fn set_deleted(&mut self) {
         self.only_deleted = true;
+    }
+
+    pub fn set_inet(&mut self, spec: &str) -> Result<(), String> {
+        self.inet = Some(InetFilter::parse(spec)?);
+        Ok(())
     }
 }
 

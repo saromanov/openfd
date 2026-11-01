@@ -182,7 +182,13 @@ fn parse_inet_addr(bytes: &[u8], family: u8) -> Option<IpAddr> {
         AF_INET6 => {
             let mut octets = [0u8; 16];
             octets.copy_from_slice(bytes);
-            Some(IpAddr::V6(Ipv6Addr::from(octets)))
+            let v6 = Ipv6Addr::from(octets);
+            // Dual-stack listeners show up as ::ffff:a.b.c.d - render as v4.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                Some(IpAddr::V4(v4))
+            } else {
+                Some(IpAddr::V6(v6))
+            }
         }
         _ => None,
     }
@@ -302,10 +308,10 @@ fn dump_inet(protocol: u8, out: &mut HashMap<u64, SockInfo>) -> std::io::Result<
             &inet_diag_req_v2(family, protocol),
         );
         roundtrip(&sock, req, |payload| {
-            // TIME_WAIT sockets arrive as compact 72-byte bodies without inode;
-            // they have no owning fd and are skipped.
-            // TIME_WAIT and friends still carry the full 72-byte struct;
-            // only truly truncated messages are rejected.
+            // Full inet_diag_msg body is 72 bytes (4 header + 48 sockid + 20
+            // tail); only truly truncated messages are rejected. TIME_WAIT
+            // sockets arrive as compact 72-byte bodies with inode 0 and are
+            // skipped below.
             if payload.len() < 72 {
                 return true;
             }
@@ -324,27 +330,44 @@ fn dump_inet(protocol: u8, out: &mut HashMap<u64, SockInfo>) -> std::io::Result<
                 return true;
             }
             let id = &payload[4..4 + INET_DIAG_SOCKID_LEN];
+            let local = match parse_inet_addr(&id[4..20], msg_family) {
+                Some(addr) => SockAddr::Inet { addr, port: sport },
+                None => return true,
+            };
+            let remote = if dport == 0 {
+                None
+            } else {
+                parse_inet_addr(&id[20..36], msg_family)
+                    .map(|addr| SockAddr::Inet { addr, port: dport })
+            };
+            // Family follows the parsed endpoints: a v4-mapped inet6 socket
+            // is presented as v4.
+            let family = match (&local, &remote) {
+                (
+                    SockAddr::Inet {
+                        addr: IpAddr::V6(_),
+                        ..
+                    },
+                    _,
+                )
+                | (
+                    _,
+                    Some(SockAddr::Inet {
+                        addr: IpAddr::V6(_),
+                        ..
+                    }),
+                ) => AddrFamily::V6,
+                _ => AddrFamily::V4,
+            };
             let info = SockInfo {
                 proto: if protocol == IPPROTO_TCP {
                     SockProto::Tcp
                 } else {
                     SockProto::Udp
                 },
-                family: if msg_family == AF_INET6 {
-                    AddrFamily::V6
-                } else {
-                    AddrFamily::V4
-                },
-                local: match parse_inet_addr(&id[4..20], msg_family) {
-                    Some(addr) => SockAddr::Inet { addr, port: sport },
-                    None => return true,
-                },
-                remote: if dport == 0 {
-                    None
-                } else {
-                    parse_inet_addr(&id[20..36], msg_family)
-                        .map(|addr| SockAddr::Inet { addr, port: dport })
-                },
+                family,
+                local,
+                remote,
                 state: match protocol {
                     IPPROTO_TCP => state_name(state),
                     _ => {
