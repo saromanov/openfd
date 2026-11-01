@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use openfd_core::{FdSink, ScanOptions};
+use openfd_core::{Backend, FdEntry, FdSink, ProcessInfo, ScanOptions};
 
 mod filters;
 mod output;
@@ -43,6 +43,20 @@ struct Args {
     /// Match target paths by substring
     #[arg(long = "path", value_name = "SUBSTR[,SUBSTR]...")]
     path: Option<String>,
+
+    /// Only fds whose target is inside DIR (lsof `+D`, non-recursive match
+    /// on the path prefix; the directory itself must exist)
+    #[arg(long = "dir", value_name = "DIR")]
+    dir: Option<String>,
+
+    /// Block until no entry matches the filters, then exit 0
+    /// (combine with --path/--dir/-i; poll interval via --interval)
+    #[arg(long = "wait")]
+    wait: bool,
+
+    /// Poll interval in seconds for --wait/--watch/--top
+    #[arg(long = "interval", value_name = "SECONDS", default_value = "1")]
+    interval: f64,
 
     /// Internet/socket filter, lsof-style: `-i` (any inet), `-i tcp`,
     /// `-i :443`, `-i tcp:443`, `-i @127.0.0.1:8080`, `-i unix`
@@ -118,6 +132,9 @@ fn main() -> ExitCode {
     if let Some(spec) = &args.path {
         filters.set_paths(spec);
     }
+    if let Some(dir) = &args.dir {
+        filters.set_dir(dir);
+    }
     if let Some(spec) = &args.inet
         && let Err(e) = filters.set_inet(spec)
     {
@@ -136,10 +153,18 @@ fn main() -> ExitCode {
         opts = opts.stat_all();
     }
 
+    let backend = openfd_core::default_backend();
+    if args.wait {
+        if args.interval <= 0.0 {
+            eprintln!("openfd: --interval must be positive");
+            return ExitCode::from(2);
+        }
+        return wait_loop(backend.as_ref(), &opts, &filters, args.interval);
+    }
+
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
     let mut printer = Printer::new(args.format(), args.summary, args.sizes, stdout);
 
-    let backend = openfd_core::default_backend();
     {
         let mut sink = scan_sink(&mut printer, &filters);
         if let Err(e) = backend.scan(&opts, &mut *sink) {
@@ -149,6 +174,32 @@ fn main() -> ExitCode {
     }
     printer.finish();
     ExitCode::SUCCESS
+}
+
+/// Block until no entry matches the filters, then exit 0. Useful for
+/// waiting on released files/ports during deploys: `openfd --wait --path X`.
+fn wait_loop(
+    backend: &dyn Backend,
+    opts: &ScanOptions,
+    filters: &Filters,
+    interval: f64,
+) -> ExitCode {
+    loop {
+        let mut matched = 0u64;
+        let mut sink = |info: &std::sync::Arc<ProcessInfo>, entry: &mut FdEntry| {
+            if filters.matches(info, entry) {
+                matched += 1;
+            }
+        };
+        if let Err(e) = backend.scan(opts, &mut sink) {
+            eprintln!("openfd: scan failed: {e}");
+            return ExitCode::FAILURE;
+        }
+        if matched == 0 {
+            return ExitCode::SUCCESS;
+        }
+        std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.05)));
+    }
 }
 
 fn scan_sink<'a>(printer: &'a mut Printer, filters: &'a Filters) -> Box<FdSink<'a>> {

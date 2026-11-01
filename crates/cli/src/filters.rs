@@ -123,6 +123,7 @@ pub struct Filters {
     users: HashSet<String>,
     commands: Vec<String>,
     paths: Vec<String>,
+    dirs: Vec<String>,
     fds: HashSet<i32>,
     only_deleted: bool,
     inet: Option<InetFilter>,
@@ -155,6 +156,9 @@ impl Filters {
         if !self.paths.is_empty() && !self.paths.iter().any(|p| entry.target.contains(p)) {
             return false;
         }
+        if !self.dirs.is_empty() && !self.dirs.iter().any(|d| dir_contains(d, &entry.target)) {
+            return false;
+        }
         if let Some(inet) = &self.inet {
             match &entry.sock {
                 Some(sock) if inet.matches_sock(sock) => {}
@@ -162,6 +166,15 @@ impl Filters {
             }
         }
         true
+    }
+
+    /// lsof `+D` equivalent: match paths strictly under (or equal to) DIR.
+    pub fn set_dir(&mut self, dir: &str) {
+        let mut d = dir.trim().to_string();
+        while d.len() > 1 && d.ends_with('/') {
+            d.pop();
+        }
+        self.dirs.push(d);
     }
 
     pub fn set_pids(&mut self, spec: &str) -> Result<(), String> {
@@ -236,6 +249,21 @@ fn command_matches(want: &str, info: &ProcessInfo) -> bool {
         }
     }
     false
+}
+
+/// true when `target` equals `dir` or lives under it (path-prefix, no
+/// component confusion: /var/log does not match /var/logx). Trailing
+/// slashes on `dir` are tolerated.
+fn dir_contains(dir: &str, target: &str) -> bool {
+    let dir = dir.trim_end_matches('/');
+    let dir = if dir.is_empty() { "/" } else { dir };
+    if target == dir {
+        return true;
+    }
+    if dir == "/" {
+        return target.starts_with('/');
+    }
+    target.starts_with(dir) && target[dir.len()..].starts_with('/')
 }
 
 #[cfg(test)]
@@ -332,5 +360,62 @@ mod tests {
         assert!(f.matches(&info(1, 0, "x", None), &entry(2, "/var/log/syslog", false)));
         assert!(!f.matches(&info(1, 0, "x", None), &entry(2, "/etc/hosts", false)));
         assert!(!f.matches(&info(1, 0, "x", None), &entry(1, "/var/log/syslog", false)));
+    }
+}
+
+#[cfg(test)]
+mod dir_tests {
+    use super::*;
+    use openfd_core::FdKind;
+
+    fn info(pid: u32) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid: None,
+            comm: "x".to_string(),
+            cmdline0: None,
+            uid: 0,
+            username: None,
+        }
+    }
+
+    fn entry(fd: i32, target: &str) -> FdEntry {
+        FdEntry {
+            fd,
+            kind: FdKind::File,
+            target: target.to_string(),
+            anon_subtype: None,
+            deleted: false,
+            size: None,
+            pos: None,
+            flags: None,
+            inode: None,
+            mode: None,
+            sock: None,
+        }
+    }
+
+    #[test]
+    fn dir_contains_boundaries() {
+        assert!(dir_contains("/var/log", "/var/log"));
+        assert!(dir_contains("/var/log", "/var/log/syslog"));
+        assert!(!dir_contains("/var/log", "/var/logx"));
+        assert!(!dir_contains("/var/log", "/var"));
+        assert!(dir_contains("/", "/anything/here"));
+        assert!(
+            dir_contains("/var/log/", "/var/log/syslog"),
+            "trailing slash normalized"
+        );
+    }
+
+    #[test]
+    fn dir_filter_matches_and_rejects() {
+        let mut f = Filters::default();
+        f.set_dir("/var/log");
+        let i = info(1);
+        assert!(f.matches(&i, &entry(3, "/var/log/syslog")));
+        assert!(f.matches(&i, &entry(3, "/var/log")));
+        assert!(!f.matches(&i, &entry(3, "/var/logx")));
+        assert!(!f.matches(&i, &entry(3, "/tmp/x")));
     }
 }

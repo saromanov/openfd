@@ -22,6 +22,16 @@ fn collect_self(opts: &ScanOptions) -> (Arc<ProcessInfo>, Vec<FdEntry>) {
     out.expect("test process must appear in /proc")
 }
 
+/// All (pid, entry) pairs of the whole scan; used for cross-process
+/// invariant checks that must tolerate /proc races.
+fn collect_all(opts: &ScanOptions) -> Vec<(u32, FdEntry)> {
+    let mut out = Vec::new();
+    openfd_core::default_backend()
+        .scan(opts, &mut |info, entry| out.push((info.pid, entry.clone())))
+        .expect("scan must succeed on a live /proc");
+    out
+}
+
 #[test]
 fn scan_finds_self_with_open_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -69,25 +79,25 @@ fn scan_reports_deleted_file_with_size() {
 
 #[test]
 fn scan_invariants_hold_for_every_entry() {
-    let (_, entries) = collect_self(&ScanOptions::new().stat_all());
-    assert!(!entries.is_empty(), "test process has open fds");
-    for e in &entries {
+    let all = collect_all(&ScanOptions::new().stat_all());
+    assert!(!all.is_empty(), "at least one process has open fds");
+    for (pid, e) in &all {
         assert!(e.fd >= 0);
         assert!(!e.target.is_empty());
         if e.kind == FdKind::Socket || e.kind == FdKind::Pipe {
             assert!(e.inode.is_some(), "pipe/socket inode must be parsed: {e:?}");
         }
-        if e.kind == FdKind::File && !e.deleted {
-            // A file can be unlinked between readlink and stat; then the
-            // link carried no " (deleted)" marker but stat already fails.
-            // Tolerate only that race: if the path still exists, size must
-            // have been filled.
-            if e.size.is_none() {
-                assert!(
-                    !Path::new(&e.target).exists(),
-                    "existing file must have a stat-ed size: {e:?}"
-                );
-            }
+        if e.kind == FdKind::File && !e.deleted && e.size.is_none() {
+            // size can be missing only when the owning process exited (or the
+            // file was unlinked) between readlink and stat: the /proc fd link
+            // is already gone. If both the process and the file are alive,
+            // a missing size is a scanner bug.
+            let proc_alive = Path::new(&format!("/proc/{pid}")).exists();
+            let file_alive = Path::new(&e.target).exists();
+            assert!(
+                !(proc_alive && file_alive),
+                "existing file of a live process must have a stat-ed size: {e:?}"
+            );
         }
     }
 }
