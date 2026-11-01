@@ -1,5 +1,6 @@
 //! Core types shared by every backend.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 /// Classification of a file descriptor, derived from the `/proc/<pid>/fd/<n>`
@@ -86,18 +87,34 @@ pub struct FdEntry {
     pub inode: Option<u64>,
     /// st_mode of the underlying file.
     pub mode: Option<u32>,
+    /// Socket details, resolved by the netlink SOCK_DIAG backend when the
+    /// entry is a socket and the table was dumped successfully.
+    pub sock: Option<SockInfo>,
 }
 
 /// Options that control a scan. Filters stay out of the core: the scanner
 /// streams everything and the CLI applies filters, so kernels like `--watch`
 /// can diff without re-scanning policy.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ScanOptions {
     /// Do not resolve uid to username (skips `/etc/passwd` reading).
     pub numeric: bool,
     /// Stat the target of every entry for size/inode/mode.
     /// When false, only deleted entries are stat-ed (needed for `--deleted`).
     pub stat_all: bool,
+    /// Join socket details (TCP/UDP/unix addresses, states) from netlink
+    /// SOCK_DIAG. Costs one bulk netlink dump per scan.
+    pub resolve_sockets: bool,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            numeric: false,
+            stat_all: false,
+            resolve_sockets: true,
+        }
+    }
 }
 
 impl ScanOptions {
@@ -114,6 +131,66 @@ impl ScanOptions {
         self.stat_all = true;
         self
     }
+
+    pub fn no_sockets(mut self) -> Self {
+        self.resolve_sockets = false;
+        self
+    }
+}
+
+/// Address family of a socket endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddrFamily {
+    V4,
+    V6,
+    Unix,
+}
+
+/// Socket endpoint address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SockAddr {
+    Inet { addr: IpAddr, port: u16 },
+    Unix(String),
+}
+
+impl std::fmt::Display for SockAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SockAddr::Inet { addr, port } => write!(f, "{addr}:{port}"),
+            SockAddr::Unix(path) => write!(f, "{path}"),
+        }
+    }
+}
+
+/// Transport protocol of a socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SockProto {
+    Tcp,
+    Udp,
+    Unix,
+}
+
+impl SockProto {
+    pub fn tag(self) -> &'static str {
+        match self {
+            SockProto::Tcp => "TCP",
+            SockProto::Udp => "UDP",
+            SockProto::Unix => "UNIX",
+        }
+    }
+}
+
+/// Details of one socket, joined from netlink SOCK_DIAG by inode.
+#[derive(Debug, Clone)]
+pub struct SockInfo {
+    pub proto: SockProto,
+    pub family: AddrFamily,
+    pub local: SockAddr,
+    /// None for unconnected sockets and listening sockets.
+    pub remote: Option<SockAddr>,
+    /// TCP state name (LISTEN, ESTABLISHED, ...). For UDP this is
+    /// "UNCONN" or "ESTABLISHED" by convention.
+    pub state: Option<&'static str>,
 }
 
 /// Callback receiving a resolved process and one of its fds.

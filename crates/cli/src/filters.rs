@@ -143,6 +143,7 @@ mod tests {
             flags: None,
             inode: None,
             mode: None,
+            sock: None,
         }
     }
 

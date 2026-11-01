@@ -78,7 +78,16 @@ fn scan_invariants_hold_for_every_entry() {
             assert!(e.inode.is_some(), "pipe/socket inode must be parsed: {e:?}");
         }
         if e.kind == FdKind::File && !e.deleted {
-            assert!(e.size.is_some(), "stat_all must fill size for files");
+            // A file can be unlinked between readlink and stat; then the
+            // link carried no " (deleted)" marker but stat already fails.
+            // Tolerate only that race: if the path still exists, size must
+            // have been filled.
+            if e.size.is_none() {
+                assert!(
+                    !Path::new(&e.target).exists(),
+                    "existing file must have a stat-ed size: {e:?}"
+                );
+            }
         }
     }
 }

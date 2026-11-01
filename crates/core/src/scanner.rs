@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::classify::{classify, stat_link};
 use crate::passwd::UserTable;
-use crate::types::{Backend, FdEntry, FdSink, ProcessInfo, ScanOptions};
+use crate::types::{Backend, FdEntry, FdKind, FdSink, ProcessInfo, ScanOptions};
 
 pub struct ProcBackend;
 
@@ -35,11 +35,19 @@ impl Backend for ProcBackend {
         "proc"
     }
 
-    fn scan(&self, opts: &ScanOptions, sink: &mut FdSink) -> io::Result<()> {
+    fn scan(&self, opts: &ScanOptions, sink: &mut FdSink<'_>) -> io::Result<()> {
         let users = if opts.numeric {
             None
         } else {
             Some(UserTable::load())
+        };
+
+        // One bulk netlink dump per scan; entries are joined by inode below.
+        // Netlink failures degrade silently: /proc data stays correct.
+        let socks = if opts.resolve_sockets {
+            crate::sockdiag::dump_all().ok()
+        } else {
+            None
         };
 
         let proc_dir = Path::new("/proc");
@@ -56,13 +64,19 @@ impl Backend for ProcBackend {
                 Some(info) => Arc::new(info),
                 None => continue,
             };
-            emit_process_fds(pid, &info, opts, sink);
+            emit_process_fds(pid, &info, opts, socks.as_ref(), sink);
         }
         Ok(())
     }
 }
 
-fn emit_process_fds(pid: u32, info: &Arc<ProcessInfo>, opts: &ScanOptions, sink: &mut FdSink) {
+fn emit_process_fds(
+    pid: u32,
+    info: &Arc<ProcessInfo>,
+    opts: &ScanOptions,
+    socks: Option<&crate::sockdiag::SockTable>,
+    sink: &mut FdSink<'_>,
+) {
     let fd_dir: PathBuf = ["/proc", &pid.to_string(), "fd"].iter().collect();
     let entries = match fs::read_dir(&fd_dir) {
         Ok(e) => e,
@@ -98,6 +112,14 @@ fn emit_process_fds(pid: u32, info: &Arc<ProcessInfo>, opts: &ScanOptions, sink:
 
         let inode = cls.inode.or_else(|| read_fdinfo_inode(pid, fd));
 
+        let sock = match socks {
+            Some(table) => match cls.inode {
+                Some(ino) if cls.kind == FdKind::Socket => table.get(ino).cloned(),
+                _ => None,
+            },
+            None => None,
+        };
+
         let mut fd_entry = FdEntry {
             fd,
             kind: cls.kind,
@@ -109,6 +131,7 @@ fn emit_process_fds(pid: u32, info: &Arc<ProcessInfo>, opts: &ScanOptions, sink:
             flags,
             inode,
             mode,
+            sock,
         };
         sink(info, &mut fd_entry);
     }

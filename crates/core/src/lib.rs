@@ -15,6 +15,7 @@ mod classify;
 
 pub mod passwd;
 pub mod scanner;
+pub mod sockdiag;
 pub mod types;
 
 pub use types::{Backend, FdEntry, FdKind, FdSink, ProcessInfo, ScanOptions};
