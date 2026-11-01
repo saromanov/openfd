@@ -81,6 +81,11 @@ struct Args {
     #[arg(long = "top", value_name = "N", num_args = 0..=1, default_missing_value = "10")]
     top: Option<String>,
 
+    /// Live mode: on every tick print newly opened (+) and closed (-) fds
+    /// that match the filters; runs until interrupted
+    #[arg(long = "watch")]
+    watch: bool,
+
     /// Skip username resolution (numeric uids, faster)
     #[arg(short = 'n', long = "numeric")]
     numeric: bool,
@@ -180,6 +185,13 @@ fn main() -> ExitCode {
         }
         return run_top(backend.as_ref(), &opts, &filters, n, args.interval);
     }
+    if args.watch {
+        if args.interval <= 0.0 {
+            eprintln!("openfd: --interval must be positive");
+            return ExitCode::from(2);
+        }
+        return run_watch(backend.as_ref(), &opts, &filters, args.interval);
+    }
 
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
     let mut printer = Printer::new(args.format(), args.summary, args.sizes, stdout);
@@ -222,6 +234,115 @@ fn wait_loop(
 }
 
 type FdCounts = std::collections::HashMap<u32, (String, String, u64)>;
+
+/// One fd of one process, identity for the watch diff.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FdKey {
+    pid: u32,
+    fd: i32,
+}
+
+#[derive(Debug, Clone)]
+struct FdState {
+    comm: String,
+    kind: &'static str,
+    target: String,
+    deleted: bool,
+}
+
+fn snapshot_once(
+    backend: &dyn Backend,
+    opts: &ScanOptions,
+    filters: &Filters,
+) -> io::Result<std::collections::BTreeMap<FdKey, FdState>> {
+    let mut map = std::collections::BTreeMap::new();
+    let mut sink = |info: &std::sync::Arc<ProcessInfo>, entry: &mut FdEntry| {
+        if !filters.matches(info, entry) {
+            return;
+        }
+        map.insert(
+            FdKey {
+                pid: info.pid,
+                fd: entry.fd,
+            },
+            FdState {
+                comm: info.comm.clone(),
+                kind: entry.kind.tag(),
+                target: entry.target.clone(),
+                deleted: entry.deleted,
+            },
+        );
+    };
+    backend.scan(opts, &mut sink)?;
+    Ok(map)
+}
+
+/// `--watch`: diff two consecutive scans every tick and print newly opened
+/// (`+`) and closed (`-`) descriptors. Runs until interrupted: Ctrl-C uses
+/// the default SIGINT disposition and terminates the process (exit 130).
+fn run_watch(
+    backend: &dyn Backend,
+    opts: &ScanOptions,
+    filters: &Filters,
+    interval: f64,
+) -> ExitCode {
+    let sleep = std::time::Duration::from_secs_f64(interval.max(0.05));
+    let mut prev = match snapshot_once(backend, opts, filters) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("openfd: scan failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    loop {
+        std::thread::sleep(sleep);
+        let next = match snapshot_once(backend, opts, filters) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("openfd: scan failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+
+        let mut out = io::stdout().lock();
+        for (key, state) in next.iter() {
+            if !prev.contains_key(key) {
+                let _ = writeln!(
+                    out,
+                    "+ {:>6} {:<5} {:<19} {:<8} {}",
+                    key.pid,
+                    key.fd,
+                    state.comm,
+                    state.kind,
+                    watch_target(state)
+                );
+            }
+        }
+        for (key, state) in prev.iter() {
+            if !next.contains_key(key) {
+                let _ = writeln!(
+                    out,
+                    "- {:>6} {:<5} {:<19} {:<8} {}",
+                    key.pid,
+                    key.fd,
+                    state.comm,
+                    state.kind,
+                    watch_target(state)
+                );
+            }
+        }
+        let _ = out.flush();
+        prev = next;
+    }
+}
+
+fn watch_target(state: &FdState) -> String {
+    if state.deleted {
+        format!("{} (deleted)", state.target)
+    } else {
+        state.target.clone()
+    }
+}
 
 fn count_once(
     backend: &dyn Backend,
