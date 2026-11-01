@@ -5,7 +5,9 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
-use openfd_core::{AddrFamily, FdEntry, ProcessInfo, SockAddr, SockInfo};
+use openfd_core::{AddrFamily, FdEntry, ProcessInfo, SockAddr, SockInfo, SockProto};
+
+use crate::color::Colors;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -96,21 +98,32 @@ pub struct Row<'a> {
 }
 
 /// TYPE column: transport tag for resolved sockets, fd-kind tag otherwise.
-fn display_kind(entry: &FdEntry) -> &'static str {
+/// The 10-char padding is applied before coloring so columns stay aligned.
+fn display_kind(entry: &FdEntry, colors: &Colors) -> String {
     match &entry.sock {
-        Some(sock) => sock.proto.tag(),
-        None => entry.kind.tag(),
+        Some(sock) => match sock.proto {
+            SockProto::Tcp => colors.tcp(&format!("{:<10}", "TCP")),
+            SockProto::Udp => colors.udp(&format!("{:<10}", "UDP")),
+            SockProto::Unix => colors.unix(&format!("{:<10}", "UNIX")),
+        },
+        None => format!("{:<10}", entry.kind.tag()),
     }
 }
 
 /// TARGET column: socket endpoints for resolved sockets, path otherwise.
-fn display_target(entry: &FdEntry) -> String {
-    if let Some(sock) = &entry.sock {
+/// Deleted files are shown in red (human output only).
+fn display_target(entry: &FdEntry, colors: &Colors) -> String {
+    let text = if let Some(sock) = &entry.sock {
         sock_target_string(sock)
     } else if entry.deleted {
         format!("{} (deleted)", entry.target)
     } else {
         entry.target.clone()
+    };
+    if entry.deleted {
+        colors.deleted(&text)
+    } else {
+        text
     }
 }
 
@@ -152,6 +165,7 @@ pub struct Printer {
     format: Format,
     summary_mode: bool,
     sizes: bool,
+    colors: Colors,
     csv: Option<csv::Writer<Box<dyn io::Write + Send>>>,
     pids: BTreeSet<u32>,
     summary: BTreeMap<u32, SummaryLine>,
@@ -164,6 +178,7 @@ impl Printer {
         format: Format,
         summary_mode: bool,
         sizes: bool,
+        colors: Colors,
         stdout: Box<dyn io::Write + Send>,
     ) -> Self {
         let csv = match format {
@@ -181,6 +196,7 @@ impl Printer {
             format,
             summary_mode,
             sizes,
+            colors,
             csv,
             pids: BTreeSet::new(),
             summary: BTreeMap::new(),
@@ -201,18 +217,19 @@ impl Printer {
                 }
             }
             Format::Csv => {
+                let plain = Colors::new(false);
                 if let Some(w) = &mut self.csv {
                     let _ = w.write_record([
                         info.comm.as_str(),
                         &info.pid.to_string(),
                         &user_of(info),
                         &entry.fd.to_string(),
-                        display_kind(entry),
+                        &display_kind(entry, &plain),
                         &entry.size.map(|s| s.to_string()).unwrap_or_default(),
                         &entry.pos.map(|p| p.to_string()).unwrap_or_default(),
                         &entry.flags.map(|f| format!("{f:#o}")).unwrap_or_default(),
                         &entry.deleted.to_string(),
-                        &display_target(entry),
+                        &display_target(entry, &plain),
                     ]);
                 }
             }
@@ -252,7 +269,8 @@ impl Printer {
 
     fn write_table_row(&self, info: &ProcessInfo, entry: &FdEntry) {
         let mut out = io::stdout().lock();
-        let target = display_target(entry);
+        let target = display_target(entry, &self.colors);
+        let kind = display_kind(entry, &self.colors);
         if self.sizes {
             let size = entry
                 .size
@@ -265,7 +283,6 @@ impl Printer {
                 pid = info.pid,
                 user = user_of(info),
                 fd = entry.fd,
-                kind = display_kind(entry),
             );
         } else {
             let _ = writeln!(
@@ -275,7 +292,6 @@ impl Printer {
                 pid = info.pid,
                 user = user_of(info),
                 fd = entry.fd,
-                kind = display_kind(entry),
             );
         }
     }

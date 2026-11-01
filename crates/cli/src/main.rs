@@ -10,9 +10,11 @@ use clap::Parser;
 
 use openfd_core::{Backend, FdEntry, FdSink, ProcessInfo, ScanOptions};
 
+mod color;
 mod filters;
 mod output;
 
+use color::{ColorMode, Colors};
 use filters::Filters;
 use output::{Format, Printer};
 
@@ -101,6 +103,10 @@ struct Args {
     /// CSV output
     #[arg(long = "csv")]
     csv: bool,
+
+    /// When to color the output: auto (default), always, never
+    #[arg(long = "color", value_name = "WHEN", default_value = "auto")]
+    color: String,
 }
 
 impl Args {
@@ -155,6 +161,15 @@ fn main() -> ExitCode {
         filters.set_deleted();
     }
 
+    let color_mode = match ColorMode::parse(&args.color) {
+        Some(m) => m,
+        None => {
+            eprintln!("openfd: --color must be auto, always or never");
+            return ExitCode::from(2);
+        }
+    };
+    let colors = Colors::new(color_mode.effective());
+
     let mut opts = ScanOptions::new();
     if args.numeric {
         opts = opts.numeric();
@@ -190,11 +205,11 @@ fn main() -> ExitCode {
             eprintln!("openfd: --interval must be positive");
             return ExitCode::from(2);
         }
-        return run_watch(backend.as_ref(), &opts, &filters, args.interval);
+        return run_watch(backend.as_ref(), &opts, &filters, args.interval, colors);
     }
 
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
-    let mut printer = Printer::new(args.format(), args.summary, args.sizes, stdout);
+    let mut printer = Printer::new(args.format(), args.summary, args.sizes, colors, stdout);
 
     {
         let mut sink = scan_sink(&mut printer, &filters);
@@ -285,6 +300,7 @@ fn run_watch(
     opts: &ScanOptions,
     filters: &Filters,
     interval: f64,
+    colors: Colors,
 ) -> ExitCode {
     let sleep = std::time::Duration::from_secs_f64(interval.max(0.05));
     let mut prev = match snapshot_once(backend, opts, filters) {
@@ -309,7 +325,8 @@ fn run_watch(
             if !prev.contains_key(key) {
                 let _ = writeln!(
                     out,
-                    "+ {:>6} {:<5} {:<19} {:<8} {}",
+                    "{} {:>6} {:<5} {:<19} {:<8} {}",
+                    colors.opened("+"),
                     key.pid,
                     key.fd,
                     state.comm,
@@ -322,7 +339,8 @@ fn run_watch(
             if !next.contains_key(key) {
                 let _ = writeln!(
                     out,
-                    "- {:>6} {:<5} {:<19} {:<8} {}",
+                    "{} {:>6} {:<5} {:<19} {:<8} {}",
+                    colors.closed("-"),
                     key.pid,
                     key.fd,
                     state.comm,
