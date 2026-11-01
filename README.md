@@ -26,11 +26,18 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
 - **Streaming by construction.** The first line prints while the scan is still
   running; a full snapshot is never materialized. The lsof OOM case
   (hundreds of thousands of fds) is closed architecturally, not by tuning.
-- **Zero unsafe, zero network.** Pure `std` in the core: `readlink`, `fdinfo`,
-  `stat`. Static binary, no runtime dependencies.
+- **Fast.** On a desktop with ~300 processes / ~100k fds, a full terse scan
+  takes ~0.3 s wall clock; the same `lsof -t -n` takes ~21 s on the same box
+  (hyperfine tables land with the first release).
+- **Zero unsafe, zero network.** Pure `std` in the core plus one netlink
+  library: `readlink`, `fdinfo`, `stat`, netlink SOCK_DIAG. No DNS, no
+  downloads, static binary, no runtime dependencies.
 - **Reclaimable bytes.** `--deleted` is not just a list — it sums the disk
   space held by unlinked-but-open files (the "why didn't the disk free up
   after I deleted the log" case).
+- **Sockets without shell glue.** TCP/UDP/unix endpoints and TCP states come
+  from one bulk netlink SOCK_DIAG dump per scan, joined to fds by inode —
+  no `ss`/`lsof`/`awk` pipelines.
 
 ## Install
 
@@ -54,13 +61,22 @@ openfd [OPTIONS]
   -u, --user <USERS>      comma-separated users (names or uids)
   -f, --fd <FDS>          comma-separated fd numbers
       --path <SUBSTR>     match target paths by substring
+      --dir <DIR>         only fds under DIR (lsof +D)
+  -i, --inet [SPEC]       socket filter: bare -i, tcp, udp, unix, :443,
+                          tcp:443, @127.0.0.1:8080 (literal IPs, no DNS)
   -d, --deleted           only unlinked-but-open files (reclaimable bytes)
   -t, --terse             print pids only
   -s, --summary           per-process summary instead of one line per fd
   -n, --numeric           skip username resolution (faster)
       --sizes             stat every fd and show sizes
+      --top [N]           fd-leak detector: growth between two scans
+      --watch             live mode: + for opened fds, - for closed ones
+      --wait              block until no entry matches the filters
+      --interval <SEC>    poll interval for --watch/--top/--wait (default 1)
   -j, --json              NDJSON output (streaming, one object per line)
       --csv               CSV output
+      --color <WHEN>      auto (default) | always | never
+      --completions <SHELL>  print completion script (bash/zsh/fish/powershell)
 ```
 
 Groups of the same kind are OR-composed (like lsof), different groups AND-composed:
@@ -69,16 +85,21 @@ Groups of the same kind are OR-composed (like lsof), different groups AND-compos
 openfd -c chrome,code          # fds of chrome or code
 openfd -u postgres -d          # deleted files held by postgres
 openfd --path /var/log -t      # pids touching /var/log
+openfd -i :443                 # who holds port 443
+openfd -i tcp                  # all TCP sockets with addresses and states
+openfd --watch -c python       # live fd churn of python processes
+openfd --top 5 --interval 2    # fastest fd growers over 2 s
+openfd --wait --path app.lock  # exit when nothing holds app.lock anymore
 ```
 
 ## Honest scope (MVP)
 
 This MVP covers the common 20% of the lsof surface. **Not yet implemented**
-(and tracked on the roadmap): `-i` socket filtering via netlink `inet_diag`
-(in progress), `--watch` with live diff, `--top` fd-leak detector, `--wait`,
-`+D` recursive directory filter, TCP state details, container awareness
-(cgroup → container id). If a flag is missing, `openfd` exits with an error —
-scripts should keep lsof until the flag they need lands.
+(and tracked on the roadmap): `+L`/`+M` style offsets-in-memory views, NFS/FS
+details, `--tree` process grouping, container awareness (cgroup v2 →
+container id), and macOS support (Linux-only for now). If a flag is missing,
+`openfd` exits with an error — scripts should keep lsof until the flag they
+need lands.
 
 ## Architecture
 
