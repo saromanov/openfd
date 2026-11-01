@@ -3,7 +3,7 @@
 //! Streams every open file descriptor of every visible process from `/proc`
 //! and prints it in a human-friendly table, terse pid list, NDJSON or CSV.
 
-use std::io;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -75,6 +75,11 @@ struct Args {
     /// Per-process summary instead of one line per fd
     #[arg(short = 's', long = "summary")]
     summary: bool,
+
+    /// fd-leak detector: scan twice (interval apart), print the top N
+    /// processes by fd growth. [N] defaults to 10.
+    #[arg(long = "top", value_name = "N", num_args = 0..=1, default_missing_value = "10")]
+    top: Option<String>,
 
     /// Skip username resolution (numeric uids, faster)
     #[arg(short = 'n', long = "numeric")]
@@ -161,6 +166,20 @@ fn main() -> ExitCode {
         }
         return wait_loop(backend.as_ref(), &opts, &filters, args.interval);
     }
+    if let Some(spec) = &args.top {
+        let n = match spec.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!("openfd: --top expects a positive number, got {spec:?}");
+                return ExitCode::from(2);
+            }
+        };
+        if args.interval <= 0.0 {
+            eprintln!("openfd: --interval must be positive");
+            return ExitCode::from(2);
+        }
+        return run_top(backend.as_ref(), &opts, &filters, n, args.interval);
+    }
 
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
     let mut printer = Printer::new(args.format(), args.summary, args.sizes, stdout);
@@ -200,6 +219,87 @@ fn wait_loop(
         }
         std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.05)));
     }
+}
+
+type FdCounts = std::collections::HashMap<u32, (String, String, u64)>;
+
+fn count_once(
+    backend: &dyn Backend,
+    opts: &ScanOptions,
+    filters: &Filters,
+) -> io::Result<FdCounts> {
+    let mut counts: FdCounts = std::collections::HashMap::new();
+    let mut sink = |info: &std::sync::Arc<ProcessInfo>, entry: &mut FdEntry| {
+        if !filters.matches(info, entry) {
+            return;
+        }
+        let user = match &info.username {
+            Some(name) => name.clone(),
+            None => info.uid.to_string(),
+        };
+        counts
+            .entry(info.pid)
+            .and_modify(|(comm, u, c)| {
+                *c += 1;
+                *comm = info.comm.clone();
+                *u = user.clone();
+            })
+            .or_insert((info.comm.clone(), user, 1));
+    };
+    backend.scan(opts, &mut sink)?;
+    Ok(counts)
+}
+
+/// `--top`: two scans `interval` seconds apart; report the processes whose
+/// fd count grew the most. A leak shows up as steady growth - run it again
+/// with a larger interval to confirm the trend.
+fn run_top(
+    backend: &dyn Backend,
+    opts: &ScanOptions,
+    filters: &Filters,
+    n: usize,
+    interval: f64,
+) -> ExitCode {
+    let first = match count_once(backend, opts, filters) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("openfd: scan failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.05)));
+    let second = match count_once(backend, opts, filters) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("openfd: scan failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut rows: Vec<(u32, String, String, u64, i64)> = second
+        .iter()
+        .map(|(pid, (comm, user, count))| {
+            let before = first.get(pid).map(|(_, _, c)| *c).unwrap_or(0);
+            let delta = *count as i64 - before as i64;
+            (*pid, comm.clone(), user.clone(), *count, delta)
+        })
+        .filter(|(_, _, _, _, delta)| *delta != 0)
+        .collect();
+    rows.sort_by(|a, b| b.4.cmp(&a.4).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(n);
+
+    let mut out = io::stdout().lock();
+    let _ = writeln!(
+        out,
+        "{:<7} {:<12} {:<19} {:>6} {:>7}",
+        "PID", "USER", "COMMAND", "FDS", "DELTA"
+    );
+    for (pid, comm, user, count, delta) in rows {
+        let comm = comm.chars().take(19).collect::<String>();
+        let user = user.chars().take(12).collect::<String>();
+        let _ = writeln!(out, "{pid:<7} {user:<12} {comm:<19} {count:>6} {delta:>+7}");
+    }
+    ExitCode::SUCCESS
 }
 
 fn scan_sink<'a>(printer: &'a mut Printer, filters: &'a Filters) -> Box<FdSink<'a>> {
