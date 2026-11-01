@@ -107,6 +107,10 @@ struct Args {
     /// When to color the output: auto (default), always, never
     #[arg(long = "color", value_name = "WHEN", default_value = "auto")]
     color: String,
+
+    /// Print a shell completion script (bash, zsh, fish, powershell) and exit
+    #[arg(long = "completions", value_name = "SHELL")]
+    completions: Option<clap_complete::Shell>,
 }
 
 impl Args {
@@ -125,6 +129,12 @@ impl Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+
+    if let Some(shell) = args.completions {
+        let mut cmd = <Args as clap::Args>::augment_args(clap::Command::new("openfd"));
+        clap_complete::generate(shell, &mut cmd, "openfd", &mut io::stdout());
+        return ExitCode::SUCCESS;
+    }
 
     let mut filters = Filters::default();
     if let Some(spec) = &args.pid
