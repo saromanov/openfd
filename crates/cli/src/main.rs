@@ -13,7 +13,7 @@ use openfd_core::{Backend, FdEntry, FdSink, ProcessInfo, ScanOptions};
 use openfd::Args;
 use openfd::color::{ColorMode, Colors};
 use openfd::filters::Filters;
-use openfd::output::Printer;
+use openfd::output::{Format, Printer};
 
 fn main() -> ExitCode {
     let args = Args::parse();
@@ -83,6 +83,12 @@ fn main() -> ExitCode {
     if args.sizes {
         opts = opts.stat_all();
     }
+    // Machine formats expose pos/flags and need fdinfo; human modes never
+    // show them, and skipping the read cuts scan CPU roughly in half.
+    let format = args.format();
+    if !matches!(format, Format::Json | Format::Csv) {
+        opts = opts.no_fdinfo();
+    }
 
     let backend = openfd_core::default_backend();
     if args.wait {
@@ -115,14 +121,7 @@ fn main() -> ExitCode {
     }
 
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
-    let mut printer = Printer::new(
-        args.format(),
-        args.summary,
-        args.tree,
-        args.sizes,
-        colors,
-        stdout,
-    );
+    let mut printer = Printer::new(format, args.summary, args.tree, args.sizes, colors, stdout);
 
     {
         let mut sink = scan_sink(&mut printer, &filters);

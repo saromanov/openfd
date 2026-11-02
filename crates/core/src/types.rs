@@ -105,6 +105,10 @@ pub struct ScanOptions {
     /// Join socket details (TCP/UDP/unix addresses, states) from netlink
     /// SOCK_DIAG. Costs one bulk netlink dump per scan.
     pub resolve_sockets: bool,
+    /// Read `/proc/<pid>/fdinfo/<fd>` for pos/flags/inode. Costs one extra
+    /// file read per fd — skip it when the consumer does not need these
+    /// fields (human table/terse/watch/top modes). Default: true.
+    pub read_fdinfo: bool,
 }
 
 impl Default for ScanOptions {
@@ -113,6 +117,7 @@ impl Default for ScanOptions {
             numeric: false,
             stat_all: false,
             resolve_sockets: true,
+            read_fdinfo: true,
         }
     }
 }
@@ -134,6 +139,15 @@ impl ScanOptions {
 
     pub fn no_sockets(mut self) -> Self {
         self.resolve_sockets = false;
+        self
+    }
+
+    /// Skip `/proc/<pid>/fdinfo` reads: pos/flags/fdinfo-inode become None.
+    /// For output modes that never show them (table, terse, summary, tree,
+    /// watch, top, wait) this cuts one file read per fd, roughly halving
+    /// the scan's CPU cost.
+    pub fn no_fdinfo(mut self) -> Self {
+        self.read_fdinfo = false;
         self
     }
 }

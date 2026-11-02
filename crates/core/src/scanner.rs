@@ -107,7 +107,11 @@ fn emit_process_fds(
             None
         };
         let cls = classify(&raw, stat_meta.as_ref());
-        let (pos, flags, fdinfo_ino) = read_fdinfo(pid, fd);
+        let (pos, flags, fdinfo_ino) = if opts.read_fdinfo {
+            read_fdinfo(pid, fd)
+        } else {
+            (None, None, None)
+        };
 
         let mut size = None;
         let mut mode = None;
