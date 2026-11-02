@@ -51,6 +51,9 @@ cargo install --path crates/cli
 
 Prebuilt binaries: see [Releases](https://github.com/saromanov/openfd/releases).
 
+Man page: [`man/openfd.1`](man/openfd.1) — install with
+`install -Dm644 man/openfd.1 /usr/local/share/man/man1/openfd.1`.
+
 ## Usage
 
 ```

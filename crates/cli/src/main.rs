@@ -10,133 +10,21 @@ use clap::Parser;
 
 use openfd_core::{Backend, FdEntry, FdSink, ProcessInfo, ScanOptions};
 
-mod color;
-mod filters;
-mod output;
-
-use color::{ColorMode, Colors};
-use filters::Filters;
-use output::{Format, Printer};
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "openfd",
-    version,
-    about = "lsof that answers instantly: list open file descriptors of every process",
-    after_help = "MVP covers the common 20% of lsof use cases. Run `openfd --help` for details."
-)]
-struct Args {
-    /// Comma-separated pids to include (-p in lsof)
-    #[arg(short = 'p', long = "pid", value_name = "PID[,PID]...")]
-    pid: Option<String>,
-
-    /// Comma-separated command names (match on comm and cmdline basename)
-    #[arg(short = 'c', long = "command", value_name = "NAME[,NAME]...")]
-    command: Option<String>,
-
-    /// Comma-separated users (names or uids)
-    #[arg(short = 'u', long = "user", value_name = "USER[,USER]...")]
-    user: Option<String>,
-
-    /// Comma-separated fd numbers to include
-    #[arg(short = 'f', long = "fd", value_name = "FD[,FD]...")]
-    fd: Option<String>,
-
-    /// Match target paths by substring
-    #[arg(long = "path", value_name = "SUBSTR[,SUBSTR]...")]
-    path: Option<String>,
-
-    /// Only fds whose target is inside DIR (lsof `+D`, non-recursive match
-    /// on the path prefix; the directory itself must exist)
-    #[arg(long = "dir", value_name = "DIR")]
-    dir: Option<String>,
-
-    /// Block until no entry matches the filters, then exit 0
-    /// (combine with --path/--dir/-i; poll interval via --interval)
-    #[arg(long = "wait")]
-    wait: bool,
-
-    /// Poll interval in seconds for --wait/--watch/--top
-    #[arg(long = "interval", value_name = "SECONDS", default_value = "1")]
-    interval: f64,
-
-    /// Internet/socket filter, lsof-style: `-i` (any inet), `-i tcp`,
-    /// `-i :443`, `-i tcp:443`, `-i @127.0.0.1:8080`, `-i unix`
-    #[arg(short = 'i', long = "inet", value_name = "[PROTO][:PORT][@ADDR]",
-          num_args = 0..=1, default_missing_value = "")]
-    inet: Option<String>,
-
-    /// Only files that were deleted while still open (reclaimable disk space)
-    #[arg(short = 'd', long = "deleted")]
-    deleted: bool,
-
-    /// Print pids only
-    #[arg(short = 't', long = "terse")]
-    terse: bool,
-
-    /// Per-process summary instead of one line per fd
-    #[arg(short = 's', long = "summary")]
-    summary: bool,
-
-    /// Group output as a process tree: parents above children (table format only)
-    #[arg(long = "tree")]
-    tree: bool,
-
-    /// fd-leak detector: scan twice (interval apart), print the top N
-    /// processes by fd growth. [N] defaults to 10.
-    #[arg(long = "top", value_name = "N", num_args = 0..=1, default_missing_value = "10")]
-    top: Option<String>,
-
-    /// Live mode: on every tick print newly opened (+) and closed (-) fds
-    /// that match the filters; runs until interrupted
-    #[arg(long = "watch")]
-    watch: bool,
-
-    /// Skip username resolution (numeric uids, faster)
-    #[arg(short = 'n', long = "numeric")]
-    numeric: bool,
-
-    /// Stat every fd and show file sizes
-    #[arg(long = "sizes")]
-    sizes: bool,
-
-    /// NDJSON output (one object per line, streaming)
-    #[arg(short = 'j', long = "json")]
-    json: bool,
-
-    /// CSV output
-    #[arg(long = "csv")]
-    csv: bool,
-
-    /// When to color the output: auto (default), always, never
-    #[arg(long = "color", value_name = "WHEN", default_value = "auto")]
-    color: String,
-
-    /// Print a shell completion script (bash, zsh, fish, powershell) and exit
-    #[arg(long = "completions", value_name = "SHELL")]
-    completions: Option<clap_complete::Shell>,
-}
-
-impl Args {
-    fn format(&self) -> Format {
-        if self.json {
-            Format::Json
-        } else if self.csv {
-            Format::Csv
-        } else if self.terse {
-            Format::Terse
-        } else {
-            Format::Table
-        }
-    }
-}
+use openfd::Args;
+use openfd::color::{ColorMode, Colors};
+use openfd::filters::Filters;
+use openfd::output::Printer;
 
 fn main() -> ExitCode {
     let args = Args::parse();
 
     if let Some(shell) = args.completions {
-        let mut cmd = <Args as clap::Args>::augment_args(clap::Command::new("openfd"));
-        clap_complete::generate(shell, &mut cmd, "openfd", &mut io::stdout());
+        clap_complete::generate(
+            shell,
+            &mut openfd::cli_command(),
+            "openfd",
+            &mut io::stdout(),
+        );
         return ExitCode::SUCCESS;
     }
 

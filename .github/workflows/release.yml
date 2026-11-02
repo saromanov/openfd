@@ -38,6 +38,8 @@ jobs:
           mkdir -p stage
           cp target/${{ matrix.target }}/release/openfd stage/${{ matrix.archive }}
           strip stage/${{ matrix.archive }} || true
+          cargo run --locked -p openfd --bin openfd-mangen -- man/openfd.1
+          cp man/openfd.1 stage/
           cd stage
           sha256sum ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
       - uses: actions/upload-artifact@v7

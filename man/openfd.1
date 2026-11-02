@@ -1,0 +1,99 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH openfd 1  "openfd 0.1.0" 
+.SH NAME
+openfd \- lsof that answers instantly: list open file descriptors of every process
+.SH SYNOPSIS
+\fBopenfd\fR [\fB\-p\fR|\fB\-\-pid\fR] [\fB\-c\fR|\fB\-\-command\fR] [\fB\-u\fR|\fB\-\-user\fR] [\fB\-f\fR|\fB\-\-fd\fR] [\fB\-\-path\fR] [\fB\-\-dir\fR] [\fB\-\-wait\fR] [\fB\-\-interval\fR] [\fB\-i\fR|\fB\-\-inet\fR] [\fB\-d\fR|\fB\-\-deleted\fR] [\fB\-t\fR|\fB\-\-terse\fR] [\fB\-s\fR|\fB\-\-summary\fR] [\fB\-\-tree\fR] [\fB\-\-top\fR] [\fB\-\-watch\fR] [\fB\-n\fR|\fB\-\-numeric\fR] [\fB\-\-sizes\fR] [\fB\-j\fR|\fB\-\-json\fR] [\fB\-\-csv\fR] [\fB\-\-color\fR] [\fB\-\-completions\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+lsof that answers instantly: list open file descriptors of every process
+.SH OPTIONS
+.TP
+\fB\-p\fR, \fB\-\-pid\fR \fI<PID[,PID]...>\fR
+Comma\-separated pids to include (\-p in lsof)
+.TP
+\fB\-c\fR, \fB\-\-command\fR \fI<NAME[,NAME]...>\fR
+Comma\-separated command names (match on comm and cmdline basename)
+.TP
+\fB\-u\fR, \fB\-\-user\fR \fI<USER[,USER]...>\fR
+Comma\-separated users (names or uids)
+.TP
+\fB\-f\fR, \fB\-\-fd\fR \fI<FD[,FD]...>\fR
+Comma\-separated fd numbers to include
+.TP
+\fB\-\-path\fR \fI<SUBSTR[,SUBSTR]...>\fR
+Match target paths by substring
+.TP
+\fB\-\-dir\fR \fI<DIR>\fR
+Only fds whose target is inside DIR (lsof `+D`, non\-recursive match on the path prefix; the directory itself must exist)
+.TP
+\fB\-\-wait\fR
+Block until no entry matches the filters, then exit 0 (combine with \-\-path/\-\-dir/\-i; poll interval via \-\-interval)
+.TP
+\fB\-\-interval\fR \fI<SECONDS>\fR [default: 1]
+Poll interval in seconds for \-\-wait/\-\-watch/\-\-top
+.TP
+\fB\-i\fR, \fB\-\-inet\fR [\fI<[PROTO][:PORT][@ADDR]>\fR]
+Internet/socket filter, lsof\-style: `\-i` (any inet), `\-i tcp`, `\-i :443`, `\-i tcp:443`, `\-i @127.0.0.1:8080`, `\-i unix`
+.TP
+\fB\-d\fR, \fB\-\-deleted\fR
+Only files that were deleted while still open (reclaimable disk space)
+.TP
+\fB\-t\fR, \fB\-\-terse\fR
+Print pids only
+.TP
+\fB\-s\fR, \fB\-\-summary\fR
+Per\-process summary instead of one line per fd
+.TP
+\fB\-\-tree\fR
+Group output as a process tree (table format only)
+.TP
+\fB\-\-top\fR [\fI<N>\fR]
+fd\-leak detector: scan twice (interval apart), print the top N processes by fd growth. [N] defaults to 10
+.TP
+\fB\-\-watch\fR
+Live mode: on every tick print newly opened (+) and closed (\-) fds that match the filters; runs until interrupted
+.TP
+\fB\-n\fR, \fB\-\-numeric\fR
+Skip username resolution (numeric uids, faster)
+.TP
+\fB\-\-sizes\fR
+Stat every fd and show file sizes
+.TP
+\fB\-j\fR, \fB\-\-json\fR
+NDJSON output (one object per line, streaming)
+.TP
+\fB\-\-csv\fR
+CSV output
+.TP
+\fB\-\-color\fR \fI<WHEN>\fR [default: auto]
+When to color the output: auto (default), always, never
+.TP
+\fB\-\-completions\fR \fI<SHELL>\fR
+Print a shell completion script (bash, zsh, fish, powershell) and exit
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+bash
+.IP \(bu 2
+elvish
+.IP \(bu 2
+fish
+.IP \(bu 2
+powershell
+.IP \(bu 2
+zsh
+.RE
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH EXTRA
+MVP covers the common 20% of lsof use cases. Run `openfd \-\-help` for details.
+.SH VERSION
+v0.1.0
