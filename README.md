@@ -27,8 +27,9 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
   running; a full snapshot is never materialized. The lsof OOM case
   (hundreds of thousands of fds) is closed architecturally, not by tuning.
 - **Fast.** On a desktop with ~300 processes / ~100k fds, a full terse scan
-  takes ~0.3 s wall clock; the same `lsof -t -n` takes ~21 s on the same box
-  (hyperfine tables land with the first release).
+  takes ~0.3 s wall clock; the same `lsof -t -n` takes ~21 s on the same box.
+  Controlled measurements: [BENCHMARKS.md](BENCHMARKS.md) — 100k fds: openfd
+  0.96 s / 3 MiB vs lsof 2.8 s / 40 MiB vs lsfd 3.0 s / 112 MiB.
 - **Zero unsafe, zero network.** Pure `std` in the core plus one netlink
   library: `readlink`, `fdinfo`, `stat`, netlink SOCK_DIAG. No DNS, no
   downloads, static binary, no runtime dependencies.
