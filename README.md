@@ -41,6 +41,12 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
 
 ## Install
 
+Homebrew (Linux):
+
+```sh
+brew install saromanov/tap/openfd
+```
+
 From source (Rust 1.85+):
 
 ```sh
