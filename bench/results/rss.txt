@@ -1,0 +1,3 @@
+/openfd -n -> 896 KB
+lsof -nw -> 40832 KB
+lsfd -n -> 115072 KB

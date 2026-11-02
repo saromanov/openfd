@@ -1,0 +1,15 @@
+Benchmark 1: /openfd -n -p 2610 (10 runs)
+                mean     ±       σ          min     …     max
+  Wall Time    2.556 s   ±   0.243 s      2.204 s   …   2.898 s
+  Memory         3.1 MiB ±     0.0 MiB      3.1 MiB …     3.1 MiB
+ 
+Benchmark 2: lsof -nw -p 2610 (10 runs)
+                mean     ±       σ          min     …     max
+  Wall Time    3.300 s   ±   0.277 s      3.008 s   …   3.700 s            +29.1%
+  Memory        39.6 MiB ±     0.1 MiB     39.4 MiB …    39.8 MiB        +1168.0%  (12.7x more)
+ 
+Benchmark 3: lsfd -n -p 2610 (10 runs)
+                mean     ±       σ          min     …     max
+  Wall Time    3.496 s   ±   0.288 s      2.932 s   …   3.865 s            +36.8%  (1.4x slower)
+  Memory       111.9 MiB ±     0.1 MiB    111.6 MiB …   112.0 MiB        +3481.6%  (35.8x more)
+ 

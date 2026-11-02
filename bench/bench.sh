@@ -19,8 +19,7 @@ mkdir -p "$OUT" "$DATA"
 echo "== container: $(. /etc/os-release && echo "$PRETTY_NAME") =="
 
 apt-get update -qq
-apt-get install -y -qq lsof util-linux time python3 >/dev/null
-chmod +x /openfd
+apt-get install -y -qq lsof util-linux util-linux-extra time python3 >/dev/null
 
 echo "== load process: $LOAD fds =="
 LOAD_PID_FILE=/tmp/fdbench.pid
@@ -48,9 +47,9 @@ cleanup() { kill "$LOAD_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
 echo "== sanity: fd counts of the load process =="
-echo "openfd: $(/openfd -n -t -p "$LOAD_PID" | wc -l)"
-echo "lsof:   $(lsof -n -t -p "$LOAD_PID" | wc -l)"
-echo "lsfd:   $(lsfd -n -p "$LOAD_PID" | wc -l)"
+echo "openfd: $(/openfd -n -p "$LOAD_PID" | wc -l)"
+echo "lsof:   $(lsof -nw -p "$LOAD_PID" | tail -n +2 | wc -l)"
+echo "lsfd:   $(lsfd -n -p "$LOAD_PID" | tail -n +2 | wc -l)"
 
 HYPERFINE=/hyperfine
 [ -x "$HYPERFINE" ] || { echo "/hyperfine must be mounted (host-built hyperfine)" >&2; exit 1; }

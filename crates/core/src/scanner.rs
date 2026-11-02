@@ -99,7 +99,7 @@ fn emit_process_fds(
         };
 
         let cls = classify(&raw);
-        let (pos, flags) = read_fdinfo(pid, fd);
+        let (pos, flags, fdinfo_ino) = read_fdinfo(pid, fd);
 
         let mut size = None;
         let mut mode = None;
@@ -110,7 +110,7 @@ fn emit_process_fds(
             mode = Some(meta.mode());
         }
 
-        let inode = cls.inode.or_else(|| read_fdinfo_inode(pid, fd));
+        let inode = cls.inode.or(fdinfo_ino);
 
         let sock = match socks {
             Some(table) => match cls.inode {
@@ -137,10 +137,12 @@ fn emit_process_fds(
     }
 }
 
-/// Read `pos` and `flags` from `/proc/<pid>/fdinfo/<fd>`.
-fn read_fdinfo(pid: u32, fd: i32) -> (Option<u64>, Option<u32>) {
+/// Read `pos`, `flags` and the file's `ino` (kernels >= 4.x) from
+/// `/proc/<pid>/fdinfo/<fd>` in a single pass.
+fn read_fdinfo(pid: u32, fd: i32) -> (Option<u64>, Option<u32>, Option<u64>) {
     let mut pos = None;
     let mut flags = None;
+    let mut ino = None;
     let path: PathBuf = ["/proc", &pid.to_string(), "fdinfo", &fd.to_string()]
         .iter()
         .collect();
@@ -152,26 +154,12 @@ fn read_fdinfo(pid: u32, fd: i32) -> (Option<u64>, Option<u32>) {
             match key {
                 "pos" => pos = value.parse().ok(),
                 "flags" => flags = u32::from_str_radix(value, 8).ok(),
+                "ino" => ino = value.parse().ok(),
                 _ => {}
             }
         }
     }
-    (pos, flags)
-}
-
-/// Read the `ino:` field from fdinfo (present for files on kernels >= 4.x).
-fn read_fdinfo_inode(pid: u32, fd: i32) -> Option<u64> {
-    let path: PathBuf = ["/proc", &pid.to_string(), "fdinfo", &fd.to_string()]
-        .iter()
-        .collect();
-    let content = fs::read_to_string(&path).ok()?;
-    for line in content.lines() {
-        let mut fields = line.splitn(2, ':');
-        if fields.next()?.trim() == "ino" {
-            return fields.next()?.trim().parse().ok();
-        }
-    }
-    None
+    (pos, flags, ino)
 }
 
 fn read_process(pid: u32, users: Option<&UserTable>) -> Option<ProcessInfo> {
@@ -224,4 +212,24 @@ fn read_status_fields(base: &Path) -> Option<(Option<u32>, u32)> {
         }
     }
     uid.map(|uid| (ppid, uid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// fdinfo of the test process' own stdin: pos/flags/ino all parse in one
+    /// pass (this used to be two reads of the same file).
+    #[test]
+    fn fdinfo_single_pass_parses_pos_flags_ino() {
+        let (pos, flags, ino) = read_fdinfo(std::process::id(), 0);
+        assert!(
+            flags.is_some(),
+            "fdinfo must expose flags for our own stdin"
+        );
+        assert!(
+            pos.is_some() || ino.is_some(),
+            "pos/ino should be present: {pos:?} {ino:?}"
+        );
+    }
 }

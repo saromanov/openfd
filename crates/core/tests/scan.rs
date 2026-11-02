@@ -91,11 +91,15 @@ fn scan_invariants_hold_for_every_entry() {
             // size can be missing only when the owning process exited (or the
             // file was unlinked) between readlink and stat: the /proc fd link
             // is already gone. If both the process and the file are alive,
-            // a missing size is a scanner bug.
+            // a missing size is a scanner bug. Virtual /proc and /sys targets
+            // are exempt: they exist while the owner lives, so the liveness
+            // re-check below proves nothing for them (an fd pointing at
+            // another process' fdinfo can be closed right after stat).
+            let virtual_target = e.target.starts_with("/proc/") || e.target.starts_with("/sys/");
             let proc_alive = Path::new(&format!("/proc/{pid}")).exists();
             let file_alive = Path::new(&e.target).exists();
             assert!(
-                !(proc_alive && file_alive),
+                virtual_target || !(proc_alive && file_alive),
                 "existing file of a live process must have a stat-ed size: {e:?}"
             );
         }
