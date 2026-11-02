@@ -66,7 +66,8 @@ openfd [OPTIONS]
                           tcp:443, @127.0.0.1:8080 (literal IPs, no DNS)
   -d, --deleted           only unlinked-but-open files (reclaimable bytes)
   -t, --terse             print pids only
-  -s, --summary           per-process summary instead of one line per fd
+  -s, --summary           per-process summary + kind totals + top shared files
+      --tree              group output as a process tree (table format only)
   -n, --numeric           skip username resolution (faster)
       --sizes             stat every fd and show sizes
       --top [N]           fd-leak detector: growth between two scans
@@ -90,13 +91,15 @@ openfd -i tcp                  # all TCP sockets with addresses and states
 openfd --watch -c python       # live fd churn of python processes
 openfd --top 5 --interval 2    # fastest fd growers over 2 s
 openfd --wait --path app.lock  # exit when nothing holds app.lock anymore
+openfd -s                      # 10 000 lines become ~50 per-process rows
+openfd --tree -c nginx         # fds grouped under each nginx worker
 ```
 
 ## Honest scope (MVP)
 
 This MVP covers the common 20% of the lsof surface. **Not yet implemented**
 (and tracked on the roadmap): `+L`/`+M` style offsets-in-memory views, NFS/FS
-details, `--tree` process grouping, container awareness (cgroup v2 →
+details, container awareness (cgroup v2 →
 container id), and macOS support (Linux-only for now). If a flag is missing,
 `openfd` exits with an error — scripts should keep lsof until the flag they
 need lands.
@@ -107,7 +110,8 @@ need lands.
   user lookup, and the `Backend` trait (platform abstraction, day-one separation
   so a macOS libproc backend can land without CLI changes).
 - [`openfd`](crates/cli) — the binary: clap-based filters, streaming table /
-  NDJSON / CSV printers, per-process summary.
+  NDJSON / CSV printers, per-process summary with kind totals and top shared
+  files, `--tree` process grouping.
 
 Core contains no unsafe code and performs no network access.
 

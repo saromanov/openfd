@@ -161,14 +161,28 @@ struct SummaryLine {
     deleted_bytes: u64,
 }
 
+/// One process in `--tree` mode: metadata plus its buffered fd rows.
+struct TreeProc {
+    comm: String,
+    user: String,
+    ppid: Option<u32>,
+    rows: Vec<FdEntry>,
+}
+
 pub struct Printer {
     format: Format,
     summary_mode: bool,
+    tree_mode: bool,
     sizes: bool,
     colors: Colors,
     csv: Option<csv::Writer<Box<dyn io::Write + Send>>>,
     pids: BTreeSet<u32>,
     summary: BTreeMap<u32, SummaryLine>,
+    tree: BTreeMap<u32, TreeProc>,
+    /// fd count per kind tag (summary mode only)
+    kind_totals: BTreeMap<&'static str, u64>,
+    /// fd count per regular-file target, top-N at the end (summary mode only)
+    file_targets: std::collections::HashMap<String, u64>,
     /// (count, bytes) of deleted files, aggregated across the scan
     deleted_total: (u64, u64),
 }
@@ -177,6 +191,7 @@ impl Printer {
     pub fn new(
         format: Format,
         summary_mode: bool,
+        tree_mode: bool,
         sizes: bool,
         colors: Colors,
         stdout: Box<dyn io::Write + Send>,
@@ -195,11 +210,15 @@ impl Printer {
         Printer {
             format,
             summary_mode,
+            tree_mode,
             sizes,
             colors,
             csv,
             pids: BTreeSet::new(),
             summary: BTreeMap::new(),
+            tree: BTreeMap::new(),
+            kind_totals: BTreeMap::new(),
+            file_targets: std::collections::HashMap::new(),
             deleted_total: (0, 0),
         }
     }
@@ -234,9 +253,18 @@ impl Printer {
                 }
             }
             Format::Table => {
-                if !self.summary_mode {
+                if self.tree_mode {
+                    self.tree_push(info, entry);
+                } else if !self.summary_mode {
                     self.write_table_row(info, entry);
                 }
+            }
+        }
+
+        if self.summary_mode {
+            *self.kind_totals.entry(entry.kind.tag()).or_insert(0) += 1;
+            if entry.kind == openfd_core::FdKind::File {
+                *self.file_targets.entry(entry.target.clone()).or_insert(0) += 1;
             }
         }
 
@@ -264,6 +292,24 @@ impl Printer {
         if entry.deleted {
             self.deleted_total.0 += 1;
             self.deleted_total.1 += entry.size.unwrap_or(0);
+        }
+    }
+
+    /// Buffer one fd row for `--tree` output.
+    fn tree_push(&mut self, info: &ProcessInfo, entry: &FdEntry) {
+        match self.tree.get_mut(&info.pid) {
+            Some(p) => p.rows.push(entry.clone()),
+            None => {
+                self.tree.insert(
+                    info.pid,
+                    TreeProc {
+                        comm: info.comm.clone(),
+                        user: user_of(info),
+                        ppid: info.ppid,
+                        rows: vec![entry.clone()],
+                    },
+                );
+            }
         }
     }
 
@@ -297,6 +343,10 @@ impl Printer {
     }
 
     pub fn finish(&mut self) {
+        if self.tree_mode {
+            self.print_tree();
+            return;
+        }
         if self.summary_mode {
             self.print_summary();
             return;
@@ -344,6 +394,95 @@ impl Printer {
                 df = s.deleted_files,
                 db = s.deleted_bytes,
             );
+        }
+
+        if !self.kind_totals.is_empty() {
+            let mut kinds: Vec<(&'static str, u64)> =
+                self.kind_totals.iter().map(|(k, n)| (*k, *n)).collect();
+            kinds.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+            let parts = kinds
+                .iter()
+                .map(|(tag, n)| format!("{tag}={n}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let _ = writeln!(out, "KIND TOTALS: {parts}");
+        }
+
+        let mut files: Vec<(&String, &u64)> =
+            self.file_targets.iter().filter(|(_, n)| **n > 1).collect();
+        files.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        files.truncate(10);
+        if !files.is_empty() {
+            let parts = files
+                .iter()
+                .map(|(path, n)| format!("{n}x {path}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "TOP FILES: {parts}");
+        }
+    }
+
+    /// Render buffered rows as a process tree: parents above children,
+    /// fd rows indented under their process. Orphans (parent not visible)
+    /// and pid 1 sit at the top level; cycles are broken defensively.
+    fn print_tree(&self) {
+        let mut out = io::stdout().lock();
+        let mut children: std::collections::HashMap<u32, Vec<u32>> =
+            std::collections::HashMap::new();
+        for (pid, proc) in &self.tree {
+            let parent = match proc.ppid {
+                Some(ppid) if self.tree.contains_key(&ppid) && ppid != *pid => ppid,
+                _ => 0,
+            };
+            children.entry(parent).or_default().push(*pid);
+        }
+        let mut visited = std::collections::BTreeSet::new();
+        let mut roots = children.get(&0).cloned().unwrap_or_default();
+        roots.sort_unstable();
+        for pid in roots {
+            self.print_tree_node(&mut out, pid, &children, &mut visited, 0);
+        }
+        // Defensive: any process not reachable from the roots (a cycle among
+        // parents) is printed at the top level too.
+        for &pid in self.tree.keys() {
+            if !visited.contains(&pid) {
+                self.print_tree_node(&mut out, pid, &children, &mut visited, 0);
+            }
+        }
+    }
+
+    fn print_tree_node(
+        &self,
+        out: &mut impl io::Write,
+        pid: u32,
+        children: &std::collections::HashMap<u32, Vec<u32>>,
+        visited: &mut std::collections::BTreeSet<u32>,
+        depth: usize,
+    ) {
+        if !visited.insert(pid) {
+            return;
+        }
+        let proc = match self.tree.get(&pid) {
+            Some(p) => p,
+            None => return,
+        };
+        let indent = "  ".repeat(depth);
+        let _ = writeln!(
+            out,
+            "{indent}{comm:<19} {pid:>7} {user:<12} {count:>5} fds",
+            comm = proc.comm,
+            user = proc.user,
+            count = proc.rows.len(),
+        );
+        for entry in &proc.rows {
+            let target = display_target(entry, &self.colors);
+            let kind = display_kind(entry, &self.colors);
+            let _ = writeln!(out, "{indent}  {fd:>4} {kind:<10} {target}", fd = entry.fd);
+        }
+        if let Some(kids) = children.get(&pid) {
+            for &kid in kids {
+                self.print_tree_node(out, kid, children, visited, depth + 1);
+            }
         }
     }
 }

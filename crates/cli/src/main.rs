@@ -78,6 +78,10 @@ struct Args {
     #[arg(short = 's', long = "summary")]
     summary: bool,
 
+    /// Group output as a process tree: parents above children (table format only)
+    #[arg(long = "tree")]
+    tree: bool,
+
     /// fd-leak detector: scan twice (interval apart), print the top N
     /// processes by fd growth. [N] defaults to 10.
     #[arg(long = "top", value_name = "N", num_args = 0..=1, default_missing_value = "10")]
@@ -137,6 +141,10 @@ fn main() -> ExitCode {
     }
 
     let mut filters = Filters::default();
+    if args.tree && (args.summary || args.terse || args.json || args.csv) {
+        eprintln!("openfd: --tree works with the table output only (not -s/-t/-j/--csv)");
+        return ExitCode::from(2);
+    }
     if let Some(spec) = &args.pid
         && let Err(e) = filters.set_pids(spec)
     {
@@ -219,7 +227,14 @@ fn main() -> ExitCode {
     }
 
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
-    let mut printer = Printer::new(args.format(), args.summary, args.sizes, colors, stdout);
+    let mut printer = Printer::new(
+        args.format(),
+        args.summary,
+        args.tree,
+        args.sizes,
+        colors,
+        stdout,
+    );
 
     {
         let mut sink = scan_sink(&mut printer, &filters);
