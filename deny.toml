@@ -1,0 +1,40 @@
+# cargo-deny configuration: license and advisory policy for openfd.
+# Run locally: `cargo deny check`.
+
+[graph]
+# Check the workspace's own dependency graph only.
+all-features = true
+
+[licenses]
+version = 2
+# openfd itself is MIT OR Apache-2.0; allow the licenses of every transitive
+# dependency. The list mirrors what otelcat-class Rust stacks need.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+
+[advisories]
+version = 2
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
