@@ -98,14 +98,20 @@ fn emit_process_fds(
             Err(_) => continue,
         };
 
-        let cls = classify(&raw);
+        // One stat of the fd link serves classification, inode, size and mode
+        // whenever a stat is needed at all (deleted entries and --sizes).
+        let cls_deleted_raw = raw.ends_with(" (deleted)") && !raw.starts_with("/memfd:");
+        let stat_meta = if cls_deleted_raw || opts.stat_all {
+            stat_link(&link)
+        } else {
+            None
+        };
+        let cls = classify(&raw, stat_meta.as_ref());
         let (pos, flags, fdinfo_ino) = read_fdinfo(pid, fd);
 
         let mut size = None;
         let mut mode = None;
-        if (cls.deleted || opts.stat_all)
-            && let Some(meta) = stat_link(&link)
-        {
+        if let Some(meta) = &stat_meta {
             size = Some(meta.len());
             mode = Some(meta.mode());
         }

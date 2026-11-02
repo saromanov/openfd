@@ -19,7 +19,7 @@ const DELETED_SUFFIX: &str = " (deleted)";
 const SOCKET_PREFIX: &str = "socket:[";
 const PIPE_PREFIX: &str = "pipe:[";
 
-pub(super) fn classify(raw: &str) -> Classified {
+pub(super) fn classify(raw: &str, meta: Option<&fs::Metadata>) -> Classified {
     if let Some(path) = raw.strip_suffix(DELETED_SUFFIX) {
         // `memfd:name (deleted)` is a memfd, not an unlinked file on disk.
         if raw.starts_with("/memfd:") {
@@ -31,8 +31,11 @@ pub(super) fn classify(raw: &str) -> Classified {
                 inode: None,
             };
         }
-        let inode = stat_file(path).map(|m| m.ino());
-        let kind = stat_kind(path).unwrap_or(FdKind::File);
+        // One stat serves kind and inode both.
+        let (inode, kind) = match meta {
+            Some(m) => (Some(m.ino()), kind_from_mode(m.mode())),
+            None => (None, FdKind::Unknown),
+        };
         return Classified {
             kind,
             target: path.to_string(),
@@ -92,16 +95,21 @@ pub(super) fn classify(raw: &str) -> Classified {
         };
     }
 
-    // Real path on disk: let stat decide the kind. stat on the /proc fd
-    // symlink follows to the underlying file, which also works for files
-    // that are only reachable through the fd.
-    match stat_file(raw) {
-        Some(meta) => Classified {
-            kind: kind_from_mode(meta.mode()),
+    // Real path on disk: let stat decide the kind. The caller stats the
+    // /proc fd link when it needs size anyway; stat by path is the fallback
+    // for scans that skip stat (it still works for files only reachable
+    // through the fd).
+    let stat = match meta {
+        Some(m) => Some((m.ino(), m.mode())),
+        None => stat_file(raw).map(|m| (m.ino(), m.mode())),
+    };
+    match stat {
+        Some((ino, mode)) => Classified {
+            kind: kind_from_mode(mode),
             target: raw.to_string(),
             deleted: false,
             anon_subtype: None,
-            inode: Some(meta.ino()),
+            inode: Some(ino),
         },
         None => Classified {
             kind: FdKind::Unknown,
@@ -121,10 +129,6 @@ pub(super) fn stat_link(link: &std::path::Path) -> Option<fs::Metadata> {
 
 fn stat_file(path: &str) -> Option<fs::Metadata> {
     fs::metadata(path).ok()
-}
-
-fn stat_kind(path: &str) -> Option<FdKind> {
-    stat_file(path).map(|m| kind_from_mode(m.mode()))
 }
 
 pub(crate) fn kind_from_mode(mode: u32) -> FdKind {
@@ -149,7 +153,7 @@ mod tests {
 
     #[test]
     fn socket_target_is_parsed() {
-        let c = classify("socket:[12345]");
+        let c = classify("socket:[12345]", None);
         assert_eq!(c.kind, FdKind::Socket);
         assert_eq!(c.inode, Some(12345));
         assert!(!c.deleted);
@@ -157,36 +161,37 @@ mod tests {
 
     #[test]
     fn pipe_target_is_parsed() {
-        let c = classify("pipe:[777]");
+        let c = classify("pipe:[777]", None);
         assert_eq!(c.kind, FdKind::Pipe);
         assert_eq!(c.inode, Some(777));
     }
 
     #[test]
     fn anon_inode_bracketed() {
-        let c = classify("anon_inode:[eventfd]");
+        let c = classify("anon_inode:[eventfd]", None);
         assert_eq!(c.kind, FdKind::AnonInode);
         assert_eq!(c.anon_subtype.as_deref(), Some("eventfd"));
     }
 
     #[test]
     fn anon_inode_unbracketed() {
-        let c = classify("anon_inode:inotify");
+        let c = classify("anon_inode:inotify", None);
         assert_eq!(c.kind, FdKind::AnonInode);
         assert_eq!(c.anon_subtype.as_deref(), Some("inotify"));
     }
 
     #[test]
     fn deleted_regular_file() {
-        let c = classify("/tmp/foo.log (deleted)");
+        let c = classify("/tmp/foo.log (deleted)", None);
         assert!(c.deleted);
         assert_eq!(c.target, "/tmp/foo.log");
-        assert_eq!(c.kind, FdKind::File);
+        // No metadata passed: the kind stays honest instead of guessing File.
+        assert_eq!(c.kind, FdKind::Unknown);
     }
 
     #[test]
     fn deleted_memfd_is_not_deleted_file() {
-        let c = classify("/memfd:secret (deleted)");
+        let c = classify("/memfd:secret (deleted)", None);
         assert!(!c.deleted);
         assert_eq!(c.kind, FdKind::Memfd);
         assert_eq!(c.target, "/memfd:secret (deleted)");
@@ -194,7 +199,7 @@ mod tests {
 
     #[test]
     fn plain_memfd() {
-        let c = classify("/memfd:juju");
+        let c = classify("/memfd:juju", None);
         assert_eq!(c.kind, FdKind::Memfd);
     }
 
