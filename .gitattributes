@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+*.rs text diff=rust
+*.toml text
+*.yml text
+*.yaml text
+*.md text
+*.1 text
+*.json text
+*.sh text eol=lf
+
+# Binaries and generated artifacts
+*.png binary
+*.gif binary
