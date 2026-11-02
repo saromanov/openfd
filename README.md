@@ -1,5 +1,9 @@
 # openfd
 
+[![CI](https://github.com/saromanov/openfd/actions/workflows/ci.yml/badge.svg)](https://github.com/saromanov/openfd/actions/workflows/ci.yml)
+[![release](https://github.com/saromanov/openfd/actions/workflows/release.yml/badge.svg)](https://github.com/saromanov/openfd/actions/workflows/release.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 **lsof that answers instantly** — a fast, streaming file-descriptor scanner for Linux.
 
 `lsof` on busy systems takes minutes, burns a full CPU core and can exhaust memory
@@ -110,6 +114,35 @@ openfd --tree -c nginx         # fds grouped under each nginx worker
 Long scans from cron or monitoring benefit from `--nice 19`: the scan keeps
 its wall-clock speed but yields the CPU whenever anything else wants it.
 
+## How it compares
+
+openfd is not trying to be a drop-in lsof replacement (see [Honest scope](#honest-scope-mvp)).
+It competes on the questions you actually ask, answered instantly:
+
+| | openfd | lsof 5.0 | lsfd (util-linux) |
+|---|---|---|---|
+| Streaming output, flat memory | yes | no — buffers everything | no — grows with fd count |
+| 100k fds, full scan | **0.96 s** / 3 MiB | 2.8 s / 40 MiB | 3.0 s / 112 MiB |
+| 10k fds, full scan | **0.11 s** | 0.81 s | 0.28 s |
+| `--watch` live diff (+/− per fd) | yes | no | no |
+| `--top` fd-leak detector | yes | no | no |
+| `--wait` (block until released) | yes | no | no |
+| `--deleted` + reclaimable bytes | yes | lists, no byte total | no |
+| Per-process summary / process tree | yes | no | no |
+| NDJSON + CSV streaming | yes | no | JSON only |
+| Colors, completions, man page | yes | no completions | completions only |
+| Port/process coverage | 80/20 subset | the full lsof language | wide |
+| Platforms | Linux | many (incl. macOS, AIX) | Linux |
+
+Numbers from [BENCHMARKS.md](BENCHMARKS.md): same machine, same minute,
+hyperfine, one process holding 10k/100k fds.
+
+Where lsof still wins: exotic flag surface (`-Z`, NFS details, library
+mappings, the full query grammar) and non-Linux platforms. Where lsfd wins:
+it ships in util-linux, so it is already installed almost everywhere.
+openfd wins when you need the answer in milliseconds, a live view, or a
+scriptable machine format without shell glue.
+
 ## Honest scope (MVP)
 
 This MVP covers the common 20% of the lsof surface. **Not yet implemented**
@@ -129,6 +162,12 @@ need lands.
   files, `--tree` process grouping.
 
 Core contains no unsafe code and performs no network access.
+
+## Project
+
+- [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Benchmarks](BENCHMARKS.md)
+- [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md)
+- Questions and ideas: [Discussions](https://github.com/saromanov/openfd/discussions)
 
 ## License
 
