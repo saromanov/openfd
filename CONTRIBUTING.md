@@ -4,7 +4,7 @@ Thanks for considering a contribution.
 
 ## Ground rules
 
-- Rust stable; the workspace uses edition 2024 (`rust-version = 1.85`).
+- Rust stable; the workspace uses edition 2024 (`rust-version = 1.88`).
 - `cargo fmt`, `cargo clippy --all --all-features --all-targets -- -D warnings`
   and `cargo test --all` must pass. CI enforces all three.
 - No `unsafe` in `openfd-core`. If a change seems to need it, open an issue first.

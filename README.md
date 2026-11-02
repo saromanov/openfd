@@ -52,7 +52,7 @@ Homebrew (Linux):
 brew install saromanov/tap/openfd
 ```
 
-From source (Rust 1.85+):
+From source (Rust 1.88+):
 
 ```sh
 git clone https://github.com/saromanov/openfd
