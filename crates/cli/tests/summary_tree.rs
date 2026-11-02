@@ -112,3 +112,13 @@ fn tree_rejects_other_output_formats() {
         );
     }
 }
+
+#[test]
+fn nice_flag_scans_normally() {
+    let held = child_holding_file();
+    let out = openfd_stdout(&["--nice", "19", "-p", &held.pid(), "--sizes"]);
+    assert!(
+        out.contains("sleep"),
+        "scan must still work under --nice: {out:?}"
+    );
+}

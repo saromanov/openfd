@@ -4,7 +4,7 @@
 .SH NAME
 openfd \- lsof that answers instantly: list open file descriptors of every process
 .SH SYNOPSIS
-\fBopenfd\fR [\fB\-p\fR|\fB\-\-pid\fR] [\fB\-c\fR|\fB\-\-command\fR] [\fB\-u\fR|\fB\-\-user\fR] [\fB\-f\fR|\fB\-\-fd\fR] [\fB\-\-path\fR] [\fB\-\-dir\fR] [\fB\-\-wait\fR] [\fB\-\-interval\fR] [\fB\-i\fR|\fB\-\-inet\fR] [\fB\-d\fR|\fB\-\-deleted\fR] [\fB\-t\fR|\fB\-\-terse\fR] [\fB\-s\fR|\fB\-\-summary\fR] [\fB\-\-tree\fR] [\fB\-\-top\fR] [\fB\-\-watch\fR] [\fB\-n\fR|\fB\-\-numeric\fR] [\fB\-\-sizes\fR] [\fB\-j\fR|\fB\-\-json\fR] [\fB\-\-csv\fR] [\fB\-\-color\fR] [\fB\-\-completions\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBopenfd\fR [\fB\-p\fR|\fB\-\-pid\fR] [\fB\-c\fR|\fB\-\-command\fR] [\fB\-u\fR|\fB\-\-user\fR] [\fB\-f\fR|\fB\-\-fd\fR] [\fB\-\-path\fR] [\fB\-\-dir\fR] [\fB\-\-wait\fR] [\fB\-\-interval\fR] [\fB\-i\fR|\fB\-\-inet\fR] [\fB\-d\fR|\fB\-\-deleted\fR] [\fB\-t\fR|\fB\-\-terse\fR] [\fB\-s\fR|\fB\-\-summary\fR] [\fB\-\-tree\fR] [\fB\-\-top\fR] [\fB\-\-watch\fR] [\fB\-n\fR|\fB\-\-numeric\fR] [\fB\-\-nice\fR] [\fB\-\-sizes\fR] [\fB\-j\fR|\fB\-\-json\fR] [\fB\-\-csv\fR] [\fB\-\-color\fR] [\fB\-\-completions\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 lsof that answers instantly: list open file descriptors of every process
 .SH OPTIONS
@@ -56,6 +56,9 @@ Live mode: on every tick print newly opened (+) and closed (\-) fds that match t
 .TP
 \fB\-n\fR, \fB\-\-numeric\fR
 Skip username resolution (numeric uids, faster)
+.TP
+\fB\-\-nice\fR \fI<N>\fR
+Run at the given nice value (19 = lowest priority) so a long scan on a busy system does not crowd out other work
 .TP
 \fB\-\-sizes\fR
 Stat every fd and show file sizes

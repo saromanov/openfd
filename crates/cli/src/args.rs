@@ -83,6 +83,11 @@ pub struct Args {
     #[arg(short = 'n', long = "numeric")]
     pub numeric: bool,
 
+    /// Run at the given nice value (19 = lowest priority) so a long scan on
+    /// a busy system does not crowd out other work
+    #[arg(long = "nice", value_name = "N", value_parser = clap::value_parser!(i8).range(0..=19))]
+    pub nice: Option<i8>,
+
     /// Stat every fd and show file sizes
     #[arg(long = "sizes")]
     pub sizes: bool,

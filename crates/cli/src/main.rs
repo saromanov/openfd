@@ -29,6 +29,15 @@ fn main() -> ExitCode {
     }
 
     let mut filters = Filters::default();
+    if let Some(nice) = args.nice {
+        // Lower our own priority before any scanning work starts. Failure is
+        // not fatal (an unprivileged nice increase always succeeds; the value
+        // is capped at 19 by the value parser).
+        let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, nice as i32) };
+        if rc != 0 {
+            eprintln!("openfd: warning: could not set nice {nice}");
+        }
+    }
     if args.tree && (args.summary || args.terse || args.json || args.csv) {
         eprintln!("openfd: --tree works with the table output only (not -s/-t/-j/--csv)");
         return ExitCode::from(2);

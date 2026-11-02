@@ -83,6 +83,7 @@ openfd [OPTIONS]
       --watch             live mode: + for opened fds, - for closed ones
       --wait              block until no entry matches the filters
       --interval <SEC>    poll interval for --watch/--top/--wait (default 1)
+      --nice <N>          run at this nice value (0-19) to stay polite on busy systems
   -j, --json              NDJSON output (streaming, one object per line)
       --csv               CSV output
       --color <WHEN>      auto (default) | always | never
@@ -100,9 +101,13 @@ openfd -i tcp                  # all TCP sockets with addresses and states
 openfd --watch -c python       # live fd churn of python processes
 openfd --top 5 --interval 2    # fastest fd growers over 2 s
 openfd --wait --path app.lock  # exit when nothing holds app.lock anymore
+openfd --nice 19               # full scan without crowding out other work
 openfd -s                      # 10 000 lines become ~50 per-process rows
 openfd --tree -c nginx         # fds grouped under each nginx worker
 ```
+
+Long scans from cron or monitoring benefit from `--nice 19`: the scan keeps
+its wall-clock speed but yields the CPU whenever anything else wants it.
 
 ## Honest scope (MVP)
 
