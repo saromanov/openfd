@@ -13,6 +13,17 @@ to [Semantic Versioning](https://semver.org).
 - `--nice N`: run the scan at a low scheduling priority.
 - `man/openfd.1`, committed and kept fresh by a test; shipped in release
   archives (`openfd-mangen`).
+- Parallel scan: the sorted pid list splits into contiguous chunks, one
+  worker thread per core (up to 32); the sink is called directly from the
+  workers, so memory stays flat. Rows of one process stay ordered; rows of
+  different processes may interleave. Below 32 processes the scan stays
+  single-threaded.
+- Filter pushdown into the scan: `-p`/`-c`/`-u` reject whole processes
+  before their fd directory is opened; `-i`/`--path`/`+D`/`-f`/`--deleted`
+  reject entries before the fdinfo read. Filtered scans drop from
+  full-scan cost to near-instant (15 ms at 100k fds).
+- `ScanOptions::sock_scope`: the netlink SOCK_DIAG dump is restricted to
+  the tables the `-i` filter needs (`-i tcp` skips UDP and unix dumps).
 
 ### Changed
 
@@ -24,7 +35,12 @@ to [Semantic Versioning](https://semver.org).
   pos/flags/inode.
 - Benchmarks re-run on Ubuntu 26.04 with lsof 4.99.4 and lsfd 2.41.3
   (`bench/run.sh` targets `ubuntu:26.04`; the harness records competitor
-  versions).
+  versions and supports a multi-process load shape, `bench/run.sh 100000 100`).
+- `FdSink` is now `Fn(&ProcessInfo, &FdEntry) + Send + Sync` (was
+  `FnMut(..., &mut FdEntry)`): parallel scans call the sink from several
+  worker threads, so shared state moves behind a `Mutex`/atomics.
+- Table and JSON output are buffered (256 KiB) instead of one write
+  syscall per row.
 
 ## [0.1.0] - 2026-11-01
 
