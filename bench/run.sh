@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host-side driver: run bench/bench.sh inside an ubuntu:24.04 container.
+# Host-side driver: run bench/bench.sh inside an ubuntu:26.04 container.
 #
 #   bench/run.sh [LOAD]      LOAD = fds held by the load process (default 10000)
 #
@@ -27,5 +27,5 @@ docker run --rm \
     -v "$PWD/bench:/bench" \
     -v "$PWD/$BIN:/openfd:ro" \
     -v "$HYPERFINE:/hyperfine:ro" \
-    ubuntu:24.04 \
+    ubuntu:26.04 \
     bash /bench/bench.sh

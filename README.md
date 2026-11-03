@@ -30,10 +30,10 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
 - **Streaming by construction.** The first line prints while the scan is still
   running; a full snapshot is never materialized. The lsof OOM case
   (hundreds of thousands of fds) is closed architecturally, not by tuning.
-- **Fast.** On a desktop with ~300 processes / ~100k fds, a full terse scan
-  takes ~0.3 s wall clock; the same `lsof -t -n` takes ~21 s on the same box.
+- **Fast.** On a desktop with ~300 processes, a full terse scan (`-t -n`)
+  takes ~40 ms wall clock; the same `lsof -t -n` takes ~5 s on the same box.
   Controlled measurements: [BENCHMARKS.md](BENCHMARKS.md) — 100k fds: openfd
-  0.96 s / 3 MiB vs lsof 2.8 s / 40 MiB vs lsfd 3.0 s / 112 MiB.
+  0.85 s / 3 MiB vs lsof 1.9 s / 40 MiB vs lsfd 2.7 s / 137 MiB.
 - **Zero unsafe, zero network.** Pure `std` in the core plus one netlink
   library: `readlink`, `fdinfo`, `stat`, netlink SOCK_DIAG. No DNS, no
   downloads, static binary, no runtime dependencies.
@@ -119,11 +119,11 @@ its wall-clock speed but yields the CPU whenever anything else wants it.
 openfd is not trying to be a drop-in lsof replacement (see [Honest scope](#honest-scope-mvp)).
 It competes on the questions you actually ask, answered instantly:
 
-| | openfd | lsof 5.0 | lsfd (util-linux) |
+| | openfd | lsof 4.99.4 | lsfd (util-linux 2.41) |
 |---|---|---|---|
 | Streaming output, flat memory | yes | no — buffers everything | no — grows with fd count |
-| 100k fds, full scan | **0.96 s** / 3 MiB | 2.8 s / 40 MiB | 3.0 s / 112 MiB |
-| 10k fds, full scan | **0.11 s** | 0.81 s | 0.28 s |
+| 100k fds, full scan | **0.85 s** / 3 MiB | 1.9 s / 40 MiB | 2.7 s / 137 MiB |
+| 10k fds, full scan | **0.09 s** | 0.20 s | 0.28 s |
 | `--watch` live diff (+/− per fd) | yes | no | no |
 | `--top` fd-leak detector | yes | no | no |
 | `--wait` (block until released) | yes | no | no |

@@ -22,6 +22,9 @@ to [Semantic Versioning](https://semver.org).
 - Human output modes (table, terse, summary, tree, watch, top, wait) skip the
   fdinfo read entirely: full scans are ~60% faster; JSON and CSV keep
   pos/flags/inode.
+- Benchmarks re-run on Ubuntu 26.04 with lsof 4.99.4 and lsfd 2.41.3
+  (`bench/run.sh` targets `ubuntu:26.04`; the harness records competitor
+  versions).
 
 ## [0.1.0] - 2026-11-01
 

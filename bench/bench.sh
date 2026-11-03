@@ -21,6 +21,9 @@ echo "== container: $(. /etc/os-release && echo "$PRETTY_NAME") =="
 apt-get update -qq
 apt-get install -y -qq lsof util-linux util-linux-extra time python3 >/dev/null
 
+echo "lsof revision: $(lsof -v 2>&1 | sed -n 's/^[[:space:]]*revision:[[:space:]]*//p')"
+echo "lsfd: $(lsfd --version 2>&1 | tail -n1)"
+
 echo "== load process: $LOAD fds =="
 LOAD_PID_FILE=/tmp/fdbench.pid
 python3 - "$LOAD" "$LOAD_PID_FILE" <<'PY' &
