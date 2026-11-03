@@ -5,10 +5,11 @@
 
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 
-use openfd_core::{Backend, FdEntry, FdSink, ProcessInfo, ScanOptions};
+use openfd_core::{Backend, FdEntry, FdSink, ProcessFilter, ProcessInfo, ScanOptions};
 
 use openfd::Args;
 use openfd::color::{ColorMode, Colors};
@@ -99,13 +100,23 @@ fn main() -> ExitCode {
         opts = opts.no_fdinfo();
     }
 
+    // Push the filters into the scan: rejected processes never get their fd
+    // directory opened, rejected fds never trigger the fdinfo read.
+    let shared_filters = Arc::new(filters);
+    opts = opts
+        .process_filter(shared_filters.clone() as Arc<dyn ProcessFilter>)
+        .fd_filter({
+            let f = shared_filters.clone();
+            Arc::new(move |entry: &FdEntry| f.matches_entry(entry))
+        });
+
     let backend = openfd_core::default_backend();
     if args.wait {
         if args.interval <= 0.0 {
             eprintln!("openfd: --interval must be positive");
             return ExitCode::from(2);
         }
-        return wait_loop(backend.as_ref(), &opts, &filters, args.interval);
+        return wait_loop(backend.as_ref(), &opts, args.interval);
     }
     if let Some(spec) = &args.top {
         let n = match spec.parse::<usize>() {
@@ -119,21 +130,21 @@ fn main() -> ExitCode {
             eprintln!("openfd: --interval must be positive");
             return ExitCode::from(2);
         }
-        return run_top(backend.as_ref(), &opts, &filters, n, args.interval);
+        return run_top(backend.as_ref(), &opts, n, args.interval);
     }
     if args.watch {
         if args.interval <= 0.0 {
             eprintln!("openfd: --interval must be positive");
             return ExitCode::from(2);
         }
-        return run_watch(backend.as_ref(), &opts, &filters, args.interval, colors);
+        return run_watch(backend.as_ref(), &opts, args.interval, colors);
     }
 
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
     let mut printer = Printer::new(format, args.summary, args.tree, args.sizes, colors, stdout);
 
     {
-        let mut sink = scan_sink(&mut printer, &filters);
+        let mut sink = scan_sink(&mut printer);
         if let Err(e) = backend.scan(&opts, &mut *sink) {
             eprintln!("openfd: scan failed: {e}");
             return ExitCode::FAILURE;
@@ -148,15 +159,12 @@ fn main() -> ExitCode {
 fn wait_loop(
     backend: &dyn Backend,
     opts: &ScanOptions,
-    filters: &Filters,
     interval: f64,
 ) -> ExitCode {
     loop {
         let mut matched = 0u64;
-        let mut sink = |info: &std::sync::Arc<ProcessInfo>, entry: &mut FdEntry| {
-            if filters.matches(info, entry) {
-                matched += 1;
-            }
+        let mut sink = |_info: &std::sync::Arc<ProcessInfo>, _entry: &mut FdEntry| {
+            matched += 1;
         };
         if let Err(e) = backend.scan(opts, &mut sink) {
             eprintln!("openfd: scan failed: {e}");
@@ -189,13 +197,9 @@ struct FdState {
 fn snapshot_once(
     backend: &dyn Backend,
     opts: &ScanOptions,
-    filters: &Filters,
 ) -> io::Result<std::collections::BTreeMap<FdKey, FdState>> {
     let mut map = std::collections::BTreeMap::new();
     let mut sink = |info: &std::sync::Arc<ProcessInfo>, entry: &mut FdEntry| {
-        if !filters.matches(info, entry) {
-            return;
-        }
         map.insert(
             FdKey {
                 pid: info.pid,
@@ -219,12 +223,11 @@ fn snapshot_once(
 fn run_watch(
     backend: &dyn Backend,
     opts: &ScanOptions,
-    filters: &Filters,
     interval: f64,
     colors: Colors,
 ) -> ExitCode {
     let sleep = std::time::Duration::from_secs_f64(interval.max(0.05));
-    let mut prev = match snapshot_once(backend, opts, filters) {
+    let mut prev = match snapshot_once(backend, opts) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("openfd: scan failed: {e}");
@@ -233,7 +236,7 @@ fn run_watch(
     };
     loop {
         std::thread::sleep(sleep);
-        let next = match snapshot_once(backend, opts, filters) {
+        let next = match snapshot_once(backend, opts) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("openfd: scan failed: {e}");
@@ -286,13 +289,9 @@ fn watch_target(state: &FdState) -> String {
 fn count_once(
     backend: &dyn Backend,
     opts: &ScanOptions,
-    filters: &Filters,
 ) -> io::Result<FdCounts> {
     let mut counts: FdCounts = std::collections::HashMap::new();
-    let mut sink = |info: &std::sync::Arc<ProcessInfo>, entry: &mut FdEntry| {
-        if !filters.matches(info, entry) {
-            return;
-        }
+    let mut sink = |info: &std::sync::Arc<ProcessInfo>, _entry: &mut FdEntry| {
         let user = match &info.username {
             Some(name) => name.clone(),
             None => info.uid.to_string(),
@@ -316,11 +315,10 @@ fn count_once(
 fn run_top(
     backend: &dyn Backend,
     opts: &ScanOptions,
-    filters: &Filters,
     n: usize,
     interval: f64,
 ) -> ExitCode {
-    let first = match count_once(backend, opts, filters) {
+    let first = match count_once(backend, opts) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("openfd: scan failed: {e}");
@@ -328,7 +326,7 @@ fn run_top(
         }
     };
     std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.05)));
-    let second = match count_once(backend, opts, filters) {
+    let second = match count_once(backend, opts) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("openfd: scan failed: {e}");
@@ -362,10 +360,8 @@ fn run_top(
     ExitCode::SUCCESS
 }
 
-fn scan_sink<'a>(printer: &'a mut Printer, filters: &'a Filters) -> Box<FdSink<'a>> {
+fn scan_sink<'a>(printer: &'a mut Printer) -> Box<FdSink<'a>> {
     Box::new(move |info, entry| {
-        if filters.matches(info, entry) {
-            printer.write_row(info, entry);
-        }
+        printer.write_row(info, entry);
     })
 }

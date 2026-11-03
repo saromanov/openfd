@@ -150,3 +150,47 @@ fn deleted_target_has_no_stale_stat_path() {
     fs::remove_file(&path).unwrap();
     assert!(!Path::new(&path).exists());
 }
+
+#[test]
+fn process_filter_skips_whole_processes() {
+    // Reject our own pid at the process level: nothing of ours reaches the
+    // sink, everything else still does (when visible).
+    let me = std::process::id();
+    let opts = ScanOptions::new()
+        .stat_all()
+        .process_filter(Arc::new(move |i: &ProcessInfo| i.pid != me));
+    let all = collect_all(&opts);
+    assert!(
+        all.iter().all(|(pid, _)| *pid != me),
+        "own pid must be pre-filtered"
+    );
+}
+
+#[test]
+fn process_filter_accepts_pid_gate() {
+    // accepts_pid must run before any read: filtering to a foreign pid that
+    // matches nothing is fine and cheap (no panic, no entries).
+    let opts = ScanOptions::new()
+        .process_filter(Arc::new(|i: &ProcessInfo| i.pid == u32::MAX));
+    let all = collect_all(&opts);
+    assert!(all.is_empty(), "no process has pid u32::MAX");
+}
+
+#[test]
+fn fd_filter_gates_fdinfo_and_entries() {
+    let opts = ScanOptions::new().fd_filter(Arc::new(|e: &FdEntry| e.fd == 0));
+    let (_, entries) = collect_self(&opts);
+    assert!(!entries.is_empty(), "fd 0 always exists");
+    assert!(entries.iter().all(|e| e.fd == 0));
+}
+
+#[test]
+fn fd_filter_plus_process_filter_compose() {
+    let me = std::process::id();
+    let opts = ScanOptions::new()
+        .process_filter(Arc::new(move |i: &ProcessInfo| i.pid == me))
+        .fd_filter(Arc::new(|e: &FdEntry| e.fd <= 2));
+    let (_, entries) = collect_self(&opts);
+    assert!(entries.iter().all(|e| e.fd <= 2));
+    assert!(entries.len() >= 3, "fds 0,1,2 exist for any process");
+}

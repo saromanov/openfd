@@ -19,8 +19,8 @@ pub mod sockdiag;
 pub mod types;
 
 pub use types::{
-    AddrFamily, Backend, FdEntry, FdKind, FdSink, ProcessInfo, ScanOptions, SockAddr, SockInfo,
-    SockProto,
+    AddrFamily, Backend, FdEntry, FdKind, FdSink, ProcessFilter, ProcessInfo, ScanOptions,
+    SockAddr, SockInfo, SockProto,
 };
 
 /// The backend for the current platform.

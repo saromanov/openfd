@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 
-use openfd_core::{FdEntry, ProcessInfo, SockAddr, SockInfo, SockProto};
+use openfd_core::{
+    FdEntry, ProcessFilter, ProcessInfo, SockAddr, SockInfo, SockProto,
+};
 
 /// Parsed `-i` filter: lsof-style `[proto][:port][@addr]`, restricted to
 /// literal IPs (no DNS - openfd performs no network access).
@@ -130,14 +132,11 @@ pub struct Filters {
 }
 
 impl Filters {
-    pub fn matches(&self, info: &ProcessInfo, entry: &FdEntry) -> bool {
-        if self.only_deleted && !entry.deleted {
-            return false;
-        }
+    /// Process-level part of the filter: everything that depends only on
+    /// the process (pids, users, commands). The scanner calls this through
+    /// [`ProcessFilter`] before opening the process' fd directory.
+    pub fn matches_process(&self, info: &ProcessInfo) -> bool {
         if !self.pids.is_empty() && !self.pids.contains(&info.pid) {
-            return false;
-        }
-        if !self.fds.is_empty() && !self.fds.contains(&entry.fd) {
             return false;
         }
         if !self.users.is_empty() {
@@ -153,6 +152,18 @@ impl Filters {
         if !self.commands.is_empty() && !self.commands.iter().any(|c| command_matches(c, info)) {
             return false;
         }
+        true
+    }
+
+    /// Fd-level part of the filter: fds, deleted, paths, dirs, inet. Safe to
+    /// call on an entry whose fdinfo/stat fields are not populated yet.
+    pub fn matches_entry(&self, entry: &FdEntry) -> bool {
+        if self.only_deleted && !entry.deleted {
+            return false;
+        }
+        if !self.fds.is_empty() && !self.fds.contains(&entry.fd) {
+            return false;
+        }
         if !self.paths.is_empty() && !self.paths.iter().any(|p| entry.target.contains(p)) {
             return false;
         }
@@ -166,6 +177,10 @@ impl Filters {
             }
         }
         true
+    }
+
+    pub fn matches(&self, info: &ProcessInfo, entry: &FdEntry) -> bool {
+        self.matches_process(info) && self.matches_entry(entry)
     }
 
     /// lsof `+D` equivalent: match paths strictly under (or equal to) DIR.
@@ -236,10 +251,21 @@ impl Filters {
     }
 }
 
+/// Push the process-level part of the filter into the scanner: rejected
+/// processes never get their fd directory opened.
+impl ProcessFilter for Filters {
+    fn accepts_pid(&self, pid: u32) -> bool {
+        self.pids.is_empty() || self.pids.contains(&pid)
+    }
+
+    fn accepts(&self, info: &ProcessInfo) -> bool {
+        self.matches_process(info)
+    }
+}
+
 /// `-c` semantics: case-insensitive match against comm and, when available,
 /// the basename of the first cmdline element.
-fn command_matches(want: &str, info: &ProcessInfo) -> bool {
-    if info.comm.eq_ignore_ascii_case(want) {
+fn command_matches(want: &str, info: &ProcessInfo) -> bool {    if info.comm.eq_ignore_ascii_case(want) {
         return true;
     }
     if let Some(cmd0) = &info.cmdline0 {
@@ -350,6 +376,28 @@ mod tests {
             &entry(0, "/tmp", false)
         ));
         assert!(!f.matches(&info(1, 0, "postgres", None), &entry(0, "/tmp", false)));
+    }
+
+    #[test]
+    fn process_and_entry_splits_compose() {
+        let mut f = Filters::default();
+        f.set_pids("42").unwrap();
+        f.set_users("user0");
+        f.set_commands("nginx");
+        f.set_paths("/var/log");
+        let i = info(42, 0, "nginx", None);
+        assert!(f.matches_process(&i));
+        assert!(f.matches_entry(&entry(3, "/var/log/syslog", false)));
+        assert!(f.matches(&i, &entry(3, "/var/log/syslog", false)));
+        // entry rejects, process accepts
+        assert!(!f.matches_entry(&entry(3, "/etc/hosts", false)));
+        // process rejects, entry accepts
+        let other = info(43, 0, "nginx", None);
+        assert!(!f.matches_process(&other));
+        assert!(
+            !f.matches(&other, &entry(3, "/var/log/syslog", false)),
+            "combined match needs both halves"
+        );
     }
 
     #[test]

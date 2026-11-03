@@ -51,6 +51,7 @@ impl Backend for ProcBackend {
         };
 
         let proc_dir = Path::new("/proc");
+        let process_filter = opts.process_filter.as_ref();
         for entry in fs::read_dir(proc_dir)? {
             let entry = match entry {
                 Ok(e) => e,
@@ -60,10 +61,21 @@ impl Backend for ProcBackend {
                 Ok(p) => p,
                 Err(_) => continue, // not a process directory
             };
+            // Cheapest reject first: before /proc/<pid> is read at all.
+            if let Some(f) = process_filter
+                && !f.accepts_pid(pid)
+            {
+                continue;
+            }
             let info = match read_process(pid, users.as_ref()) {
                 Some(info) => Arc::new(info),
                 None => continue,
             };
+            if let Some(f) = process_filter
+                && !f.accepts(&info)
+            {
+                continue;
+            }
             emit_process_fds(pid, &info, opts, socks.as_ref(), sink);
         }
         Ok(())
@@ -107,11 +119,6 @@ fn emit_process_fds(
             None
         };
         let cls = classify(&raw, stat_meta.as_ref());
-        let (pos, flags, fdinfo_ino) = if opts.read_fdinfo {
-            read_fdinfo(pid, fd)
-        } else {
-            (None, None, None)
-        };
 
         let mut size = None;
         let mut mode = None;
@@ -120,7 +127,7 @@ fn emit_process_fds(
             mode = Some(meta.mode());
         }
 
-        let inode = cls.inode.or(fdinfo_ino);
+        let inode = cls.inode;
 
         let sock = match socks {
             Some(table) => match cls.inode {
@@ -130,19 +137,38 @@ fn emit_process_fds(
             None => None,
         };
 
-        let mut fd_entry = FdEntry {
+        let fd_entry = FdEntry {
             fd,
             kind: cls.kind,
             target: cls.target,
             anon_subtype: cls.anon_subtype,
             deleted: cls.deleted,
             size,
-            pos,
-            flags,
+            pos: None,
+            flags: None,
             inode,
             mode,
             sock,
         };
+
+        // Fd-level reject: skip the fdinfo read entirely.
+        if let Some(f) = &opts.fd_filter
+            && !f(&fd_entry)
+        {
+            continue;
+        }
+
+        let mut fd_entry = fd_entry;
+        let (pos, flags, fdinfo_ino) = if opts.read_fdinfo {
+            read_fdinfo(pid, fd)
+        } else {
+            (None, None, None)
+        };
+        fd_entry.pos = pos;
+        fd_entry.flags = flags;
+        if fd_entry.inode.is_none() {
+            fd_entry.inode = fdinfo_ino;
+        }
         sink(info, &mut fd_entry);
     }
 }

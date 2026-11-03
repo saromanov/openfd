@@ -92,10 +92,39 @@ pub struct FdEntry {
     pub sock: Option<SockInfo>,
 }
 
-/// Options that control a scan. Filters stay out of the core: the scanner
-/// streams everything and the CLI applies filters, so kernels like `--watch`
-/// can diff without re-scanning policy.
-#[derive(Debug, Clone)]
+/// Callback receiving a resolved process and one of its fds.
+pub type FdSink<'a> = dyn FnMut(&Arc<ProcessInfo>, &mut FdEntry) + 'a;
+
+/// Process-level prefilter. The scanner consults it before spending any
+/// per-fd work on a process: [`ProcessFilter::accepts_pid`] runs before
+/// `/proc/<pid>` is even read, [`ProcessFilter::accepts`] right after
+/// reading comm/cmdline/status. A rejected process contributes nothing.
+pub trait ProcessFilter: Send + Sync {
+    /// Cheap pid-level check, called before any read of `/proc/<pid>`.
+    /// Rejection here is the cheapest possible skip.
+    fn accepts_pid(&self, _pid: u32) -> bool {
+        true
+    }
+
+    /// Full check once the process metadata is known.
+    fn accepts(&self, info: &ProcessInfo) -> bool;
+}
+
+impl<F> ProcessFilter for F
+where
+    F: Fn(&ProcessInfo) -> bool + Send + Sync,
+{
+    fn accepts(&self, info: &ProcessInfo) -> bool {
+        self(info)
+    }
+}
+
+/// Options that control a scan. Filters can stay out of the core (the
+/// scanner streams everything and the CLI applies them), but optional hooks
+/// let the caller push filters *into* the scan so that non-matching
+/// processes and fds cost nothing (see [`ProcessFilter`] and
+/// [`ScanOptions::fd_filter`]).
+#[derive(Clone)]
 pub struct ScanOptions {
     /// Do not resolve uid to username (skips `/etc/passwd` reading).
     pub numeric: bool,
@@ -109,6 +138,26 @@ pub struct ScanOptions {
     /// file read per fd — skip it when the consumer does not need these
     /// fields (human table/terse/watch/top modes). Default: true.
     pub read_fdinfo: bool,
+    /// Reject whole processes before any fd work. None = keep everything.
+    pub process_filter: Option<Arc<dyn ProcessFilter>>,
+    /// Reject single fds after readlink+classify+socket-join but before the
+    /// `/proc/<pid>/fdinfo/<fd>` read. The entry carries fd, kind, target,
+    /// deleted and sock; size/pos/flags/mode are not yet populated. None =
+    /// keep everything.
+    pub fd_filter: Option<Arc<dyn Fn(&FdEntry) -> bool + Send + Sync>>,
+}
+
+impl std::fmt::Debug for ScanOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScanOptions")
+            .field("numeric", &self.numeric)
+            .field("stat_all", &self.stat_all)
+            .field("resolve_sockets", &self.resolve_sockets)
+            .field("read_fdinfo", &self.read_fdinfo)
+            .field("process_filter", &self.process_filter.is_some())
+            .field("fd_filter", &self.fd_filter.is_some())
+            .finish()
+    }
 }
 
 impl Default for ScanOptions {
@@ -118,6 +167,8 @@ impl Default for ScanOptions {
             stat_all: false,
             resolve_sockets: true,
             read_fdinfo: true,
+            process_filter: None,
+            fd_filter: None,
         }
     }
 }
@@ -148,6 +199,22 @@ impl ScanOptions {
     /// the scan's CPU cost.
     pub fn no_fdinfo(mut self) -> Self {
         self.read_fdinfo = false;
+        self
+    }
+
+    /// Reject whole processes before any fd work on them.
+    pub fn process_filter(mut self, f: Arc<dyn ProcessFilter>) -> Self {
+        self.process_filter = Some(f);
+        self
+    }
+
+    /// Reject single fds before the fdinfo read (see the field docs for
+    /// what the entry contains at that point).
+    pub fn fd_filter(
+        mut self,
+        f: Arc<dyn Fn(&FdEntry) -> bool + Send + Sync>,
+    ) -> Self {
+        self.fd_filter = Some(f);
         self
     }
 }
@@ -206,9 +273,6 @@ pub struct SockInfo {
     /// "UNCONN" or "ESTABLISHED" by convention.
     pub state: Option<&'static str>,
 }
-
-/// Callback receiving a resolved process and one of its fds.
-pub type FdSink<'a> = dyn FnMut(&Arc<ProcessInfo>, &mut FdEntry) + 'a;
 
 /// Platform backend trait. Linux ships a `/proc` implementation; the trait
 /// exists from day one so that a macOS (libproc) backend can be added without
