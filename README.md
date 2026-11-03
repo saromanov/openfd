@@ -30,6 +30,8 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
 - **Streaming by construction.** The first line prints while the scan is still
   running; a full snapshot is never materialized. The lsof OOM case
   (hundreds of thousands of fds) is closed architecturally, not by tuning.
+  Rows of one process stay ordered; on multi-core scans rows of different
+  processes may interleave.
 - **Fast.** On a desktop with ~300 processes, a full terse scan (`-t -n`)
   takes ~20 ms wall clock; the same `lsof -t -n` takes ~6.6 s on the same box.
   Controlled measurements: [BENCHMARKS.md](BENCHMARKS.md) — 100k fds: openfd
