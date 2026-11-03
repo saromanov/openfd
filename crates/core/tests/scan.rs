@@ -10,26 +10,32 @@ use openfd_core::{FdEntry, FdKind, ProcessInfo, ScanOptions};
 use std::sync::Arc;
 
 fn collect_self(opts: &ScanOptions) -> (Arc<ProcessInfo>, Vec<FdEntry>) {
-    let mut out: Option<(Arc<ProcessInfo>, Vec<FdEntry>)> = None;
+    let out: std::sync::Mutex<Option<(Arc<ProcessInfo>, Vec<FdEntry>)>> =
+        std::sync::Mutex::new(None);
     openfd_core::default_backend()
-        .scan(opts, &mut |info, entry| {
+        .scan(opts, &|info, entry| {
             if info.pid == std::process::id() {
-                let slot = out.get_or_insert_with(|| (Arc::clone(info), Vec::new()));
+                let mut slot = out.lock().unwrap();
+                let slot = slot.get_or_insert_with(|| (Arc::clone(info), Vec::new()));
                 slot.1.push(entry.clone());
             }
         })
         .expect("scan must succeed on a live /proc");
-    out.expect("test process must appear in /proc")
+    out.into_inner()
+        .unwrap()
+        .expect("test process must appear in /proc")
 }
 
 /// All (pid, entry) pairs of the whole scan; used for cross-process
 /// invariant checks that must tolerate /proc races.
 fn collect_all(opts: &ScanOptions) -> Vec<(u32, FdEntry)> {
-    let mut out = Vec::new();
+    let out = std::sync::Mutex::new(Vec::new());
     openfd_core::default_backend()
-        .scan(opts, &mut |info, entry| out.push((info.pid, entry.clone())))
+        .scan(opts, &|info, entry| {
+            out.lock().unwrap().push((info.pid, entry.clone()))
+        })
         .expect("scan must succeed on a live /proc");
-    out
+    out.into_inner().unwrap()
 }
 
 #[test]
@@ -129,14 +135,17 @@ fn numeric_mode_skips_username() {
 #[test]
 fn scan_processes_have_sane_pids() {
     let opts = ScanOptions::new().numeric();
-    let mut count = 0usize;
+    let count = std::sync::atomic::AtomicUsize::new(0);
     openfd_core::default_backend()
-        .scan(&opts, &mut |info, _| {
+        .scan(&opts, &|info, _| {
             assert!(info.pid > 0);
-            count += 1;
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })
         .unwrap();
-    assert!(count > 0, "at least one process must be scannable");
+    assert!(
+        count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "at least one process must be scannable"
+    );
 }
 
 // A deleted-file stat works through the /proc link itself; guard against
@@ -206,7 +215,7 @@ fn parallel_scan_matches_sequential() {
     // parallel_min_pids(0) forces the parallel path even on a tiny /proc.
     // Sibling tests spawn and exit while this runs, so only entries under
     // our own tempdir are stable enough to compare.
-    let mut stable = |opts: &ScanOptions| {
+    let stable = |opts: &ScanOptions| {
         let (_, entries) = collect_self(opts);
         let hit = entries.iter().any(|e| e.target == path.to_string_lossy());
         assert!(hit, "scan must find our own open file");

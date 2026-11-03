@@ -147,8 +147,16 @@ impl SockScope {
     }
 }
 
+/// Fd-level filter: true keeps the entry. Runs before the fdinfo read.
+pub type FdFilterFn = dyn Fn(&FdEntry) -> bool + Send + Sync;
+
 /// Callback receiving a resolved process and one of its fds.
-pub type FdSink<'a> = dyn FnMut(&Arc<ProcessInfo>, &mut FdEntry) + 'a;
+///
+/// Concurrency: the scanner may call the sink from several worker threads
+/// (parallel scans), so implementors must be thread-safe — keep shared state
+/// behind a `Mutex`/atomics. Rows of one process stay ordered; rows of
+/// different processes may interleave.
+pub type FdSink<'a> = dyn Fn(&Arc<ProcessInfo>, &FdEntry) + Send + Sync + 'a;
 
 /// Process-level prefilter. The scanner consults it before spending any
 /// per-fd work on a process: [`ProcessFilter::accepts_pid`] runs before
@@ -206,7 +214,7 @@ pub struct ScanOptions {
     /// `/proc/<pid>/fdinfo/<fd>` read. The entry carries fd, kind, target,
     /// deleted and sock; size/pos/flags/mode are not yet populated. None =
     /// keep everything.
-    pub fd_filter: Option<Arc<dyn Fn(&FdEntry) -> bool + Send + Sync>>,
+    pub fd_filter: Option<Arc<FdFilterFn>>,
 }
 
 impl std::fmt::Debug for ScanOptions {
@@ -359,6 +367,7 @@ pub trait Backend {
     /// Stream every open fd of every visible process into `sink`.
     ///
     /// Individual unreadable processes/fds are skipped: `/proc` changes under
-    /// us by design. Only a broken `/proc` mount is an error.
-    fn scan(&self, opts: &ScanOptions, sink: &mut FdSink<'_>) -> std::io::Result<()>;
+    /// us by design. Only a broken `/proc` mount is an error. The sink must
+    /// be thread-safe: parallel scans call it from several workers.
+    fn scan(&self, opts: &ScanOptions, sink: &FdSink<'_>) -> std::io::Result<()>;
 }

@@ -142,11 +142,18 @@ fn main() -> ExitCode {
     }
 
     let stdout = Box::new(io::stdout()) as Box<dyn io::Write + Send>;
-    let mut printer = Printer::new(format, args.summary, args.tree, args.sizes, colors, stdout);
+    let printer = Arc::new(Printer::new(
+        format,
+        args.summary,
+        args.tree,
+        args.sizes,
+        colors,
+        stdout,
+    ));
 
     {
-        let mut sink = scan_sink(&mut printer);
-        if let Err(e) = backend.scan(&opts, &mut *sink) {
+        let sink = scan_sink(Arc::clone(&printer));
+        if let Err(e) = backend.scan(&opts, &sink) {
             eprintln!("openfd: scan failed: {e}");
             return ExitCode::FAILURE;
         }
@@ -159,15 +166,15 @@ fn main() -> ExitCode {
 /// waiting on released files/ports during deploys: `openfd --wait --path X`.
 fn wait_loop(backend: &dyn Backend, opts: &ScanOptions, interval: f64) -> ExitCode {
     loop {
-        let mut matched = 0u64;
-        let mut sink = |_info: &std::sync::Arc<ProcessInfo>, _entry: &mut FdEntry| {
-            matched += 1;
+        let matched = std::sync::atomic::AtomicU64::new(0);
+        let sink = |_info: &std::sync::Arc<ProcessInfo>, _entry: &FdEntry| {
+            matched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         };
-        if let Err(e) = backend.scan(opts, &mut sink) {
+        if let Err(e) = backend.scan(opts, &sink) {
             eprintln!("openfd: scan failed: {e}");
             return ExitCode::FAILURE;
         }
-        if matched == 0 {
+        if matched.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             return ExitCode::SUCCESS;
         }
         std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.05)));
@@ -195,9 +202,9 @@ fn snapshot_once(
     backend: &dyn Backend,
     opts: &ScanOptions,
 ) -> io::Result<std::collections::BTreeMap<FdKey, FdState>> {
-    let mut map = std::collections::BTreeMap::new();
-    let mut sink = |info: &std::sync::Arc<ProcessInfo>, entry: &mut FdEntry| {
-        map.insert(
+    let map = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let sink = |info: &std::sync::Arc<ProcessInfo>, entry: &FdEntry| {
+        map.lock().unwrap().insert(
             FdKey {
                 pid: info.pid,
                 fd: entry.fd,
@@ -210,8 +217,8 @@ fn snapshot_once(
             },
         );
     };
-    backend.scan(opts, &mut sink)?;
-    Ok(map)
+    backend.scan(opts, &sink)?;
+    Ok(map.into_inner().unwrap())
 }
 
 /// `--watch`: diff two consecutive scans every tick and print newly opened
@@ -279,13 +286,16 @@ fn watch_target(state: &FdState) -> String {
 }
 
 fn count_once(backend: &dyn Backend, opts: &ScanOptions) -> io::Result<FdCounts> {
-    let mut counts: FdCounts = std::collections::HashMap::new();
-    let mut sink = |info: &std::sync::Arc<ProcessInfo>, _entry: &mut FdEntry| {
+    let counts: std::sync::Mutex<FdCounts> =
+        std::sync::Mutex::new(std::collections::HashMap::new());
+    let sink = |info: &std::sync::Arc<ProcessInfo>, _entry: &FdEntry| {
         let user = match &info.username {
             Some(name) => name.clone(),
             None => info.uid.to_string(),
         };
         counts
+            .lock()
+            .unwrap()
             .entry(info.pid)
             .and_modify(|(comm, u, c)| {
                 *c += 1;
@@ -294,8 +304,8 @@ fn count_once(backend: &dyn Backend, opts: &ScanOptions) -> io::Result<FdCounts>
             })
             .or_insert((info.comm.clone(), user, 1));
     };
-    backend.scan(opts, &mut sink)?;
-    Ok(counts)
+    backend.scan(opts, &sink)?;
+    Ok(counts.into_inner().unwrap())
 }
 
 /// `--top`: two scans `interval` seconds apart; report the processes whose
@@ -344,7 +354,7 @@ fn run_top(backend: &dyn Backend, opts: &ScanOptions, n: usize, interval: f64) -
     ExitCode::SUCCESS
 }
 
-fn scan_sink<'a>(printer: &'a mut Printer) -> Box<FdSink<'a>> {
+fn scan_sink(printer: Arc<Printer>) -> Box<FdSink<'static>> {
     Box::new(move |info, entry| {
         printer.write_row(info, entry);
     })

@@ -29,6 +29,6 @@ pub fn default_backend() -> Box<dyn Backend> {
 }
 
 /// Convenience wrapper: scan with [`default_backend`].
-pub fn scan(opts: &ScanOptions, sink: &mut FdSink<'_>) -> std::io::Result<()> {
+pub fn scan(opts: &ScanOptions, sink: &FdSink<'_>) -> std::io::Result<()> {
     default_backend().scan(opts, sink)
 }

@@ -175,7 +175,17 @@ pub struct Printer {
     tree_mode: bool,
     sizes: bool,
     colors: Colors,
+    /// Mutable output state behind a mutex. Critical sections stay short:
+    /// row formatting (the fat part) runs on the lock-free immutable config
+    /// above, so parallel workers only queue for the buffered write.
+    state: std::sync::Mutex<PrinterState>,
+}
+
+struct PrinterState {
     csv: Option<csv::Writer<Box<dyn io::Write + Send>>>,
+    /// Buffered stdout for the line modes (table, json, terse finish):
+    /// one buffer instead of a write syscall per row.
+    line_out: Option<std::io::BufWriter<Box<dyn io::Write + Send>>>,
     pids: BTreeSet<u32>,
     summary: BTreeMap<u32, SummaryLine>,
     tree: BTreeMap<u32, TreeProc>,
@@ -213,62 +223,143 @@ impl Printer {
             tree_mode,
             sizes,
             colors,
-            csv,
-            pids: BTreeSet::new(),
-            summary: BTreeMap::new(),
-            tree: BTreeMap::new(),
-            kind_totals: BTreeMap::new(),
-            file_targets: std::collections::HashMap::new(),
-            deleted_total: (0, 0),
+            state: std::sync::Mutex::new(PrinterState {
+                csv,
+                line_out: Some(std::io::BufWriter::with_capacity(
+                    256 * 1024,
+                    Box::new(io::stdout()) as Box<dyn io::Write + Send>,
+                )),
+                pids: BTreeSet::new(),
+                summary: BTreeMap::new(),
+                tree: BTreeMap::new(),
+                kind_totals: BTreeMap::new(),
+                file_targets: std::collections::HashMap::new(),
+                deleted_total: (0, 0),
+            }),
         }
     }
 
-    pub fn write_row(&mut self, info: &ProcessInfo, entry: &FdEntry) {
+    pub fn write_row(&self, info: &ProcessInfo, entry: &FdEntry) {
         match self.format {
             Format::Terse => {
-                self.pids.insert(info.pid);
+                // One lock acquisition per distinct pid, not per row: a worker
+                // scans a pid-sorted chunk, so repeats are consecutive.
+                thread_local! {
+                    static LAST: std::cell::Cell<(Option<std::thread::ThreadId>, u32)> =
+                        const { std::cell::Cell::new((None, u32::MAX)) };
+                }
+                let tid = std::thread::current().id();
+                if LAST.with(|c| c.get()) == (Some(tid), info.pid) {
+                    return;
+                }
+                LAST.with(|c| c.set((Some(tid), info.pid)));
+                self.state.lock().unwrap().pids.insert(info.pid);
             }
             Format::Json => {
-                let r = row(info, entry);
-                if let Ok(line) = serde_json::to_string(&r) {
-                    let mut out = io::stdout().lock();
+                let line = serde_json::to_string(&row(info, entry)).ok();
+                let mut st = self.state.lock().unwrap();
+                if let (Some(line), Some(out)) = (line, st.line_out.as_mut()) {
                     let _ = writeln!(out, "{line}");
                 }
+                self.aggregate(&mut st, info, entry);
             }
             Format::Csv => {
                 let plain = Colors::new(false);
-                if let Some(w) = &mut self.csv {
-                    let _ = w.write_record([
-                        info.comm.as_str(),
-                        &info.pid.to_string(),
-                        &user_of(info),
-                        &entry.fd.to_string(),
-                        &display_kind(entry, &plain),
-                        &entry.size.map(|s| s.to_string()).unwrap_or_default(),
-                        &entry.pos.map(|p| p.to_string()).unwrap_or_default(),
-                        &entry.flags.map(|f| format!("{f:#o}")).unwrap_or_default(),
-                        &entry.deleted.to_string(),
-                        &display_target(entry, &plain),
-                    ]);
+                let user = user_of(info);
+                let kind = display_kind(entry, &plain);
+                let target = display_target(entry, &plain);
+                let pid_s = info.pid.to_string();
+                let fd_s = entry.fd.to_string();
+                let size_s = entry.size.map(|s| s.to_string()).unwrap_or_default();
+                let pos_s = entry.pos.map(|p| p.to_string()).unwrap_or_default();
+                let flags_s = entry.flags.map(|f| format!("{f:#o}")).unwrap_or_default();
+                let del_s = entry.deleted.to_string();
+                let record = [
+                    info.comm.as_str(),
+                    &pid_s,
+                    &user,
+                    &fd_s,
+                    &kind,
+                    &size_s,
+                    &pos_s,
+                    &flags_s,
+                    &del_s,
+                    &target,
+                ];
+                let mut st = self.state.lock().unwrap();
+                if let Some(w) = st.csv.as_mut() {
+                    let _ = w.write_record(record);
                 }
+                self.aggregate(&mut st, info, entry);
             }
             Format::Table => {
                 if self.tree_mode {
-                    self.tree_push(info, entry);
-                } else if !self.summary_mode {
-                    self.write_table_row(info, entry);
+                    let mut st = self.state.lock().unwrap();
+                    match st.tree.get_mut(&info.pid) {
+                        Some(p) => p.rows.push(entry.clone()),
+                        None => {
+                            st.tree.insert(
+                                info.pid,
+                                TreeProc {
+                                    comm: info.comm.clone(),
+                                    user: user_of(info),
+                                    ppid: info.ppid,
+                                    rows: vec![entry.clone()],
+                                },
+                            );
+                        }
+                    }
+                    self.aggregate(&mut st, info, entry);
+                } else if self.summary_mode {
+                    let mut st = self.state.lock().unwrap();
+                    self.aggregate(&mut st, info, entry);
+                } else {
+                    // Format first (lock-free), then one short locked write.
+                    let sizes = self.sizes;
+                    let target = display_target(entry, &self.colors);
+                    let kind = display_kind(entry, &self.colors);
+                    let size = entry
+                        .size
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let mut st = self.state.lock().unwrap();
+                    if let Some(out) = st.line_out.as_mut() {
+                        if sizes {
+                            let _ = writeln!(
+                                out,
+                                "{comm:<19} {pid:>7} {user:<12} {fd:>6} {kind:<10} {size:>10}  {target}",
+                                comm = info.comm,
+                                pid = info.pid,
+                                user = user_of(info),
+                                fd = entry.fd,
+                            );
+                        } else {
+                            let _ = writeln!(
+                                out,
+                                "{comm:<19} {pid:>7} {user:<12} {fd:>6} {kind:<10} {target}",
+                                comm = info.comm,
+                                pid = info.pid,
+                                user = user_of(info),
+                                fd = entry.fd,
+                            );
+                        }
+                    }
+                    self.aggregate(&mut st, info, entry);
                 }
             }
         }
+    }
 
+    /// Summary/tree/deleted aggregation; caller holds the state lock.
+    fn aggregate(&self, st: &mut PrinterState, info: &ProcessInfo, entry: &FdEntry) {
         if self.summary_mode {
-            *self.kind_totals.entry(entry.kind.tag()).or_insert(0) += 1;
+            *st.kind_totals.entry(entry.kind.tag()).or_insert(0) += 1;
             if entry.kind == openfd_core::FdKind::File {
-                *self.file_targets.entry(entry.target.clone()).or_insert(0) += 1;
+                *st.file_targets.entry(entry.target.clone()).or_insert(0) += 1;
             }
         }
 
-        if let Some(s) = self.summary.get_mut(&info.pid) {
+        if let Some(s) = st.summary.get_mut(&info.pid) {
             s.count += 1;
             if entry.deleted {
                 s.deleted_files += 1;
@@ -286,87 +377,46 @@ impl Printer {
                     0
                 },
             };
-            self.summary.insert(info.pid, s);
+            st.summary.insert(info.pid, s);
         }
 
         if entry.deleted {
-            self.deleted_total.0 += 1;
-            self.deleted_total.1 += entry.size.unwrap_or(0);
+            st.deleted_total.0 += 1;
+            st.deleted_total.1 += entry.size.unwrap_or(0);
         }
     }
 
-    /// Buffer one fd row for `--tree` output.
-    fn tree_push(&mut self, info: &ProcessInfo, entry: &FdEntry) {
-        match self.tree.get_mut(&info.pid) {
-            Some(p) => p.rows.push(entry.clone()),
-            None => {
-                self.tree.insert(
-                    info.pid,
-                    TreeProc {
-                        comm: info.comm.clone(),
-                        user: user_of(info),
-                        ppid: info.ppid,
-                        rows: vec![entry.clone()],
-                    },
-                );
-            }
+    pub fn finish(&self) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(out) = st.line_out.as_mut() {
+            let _ = out.flush();
         }
-    }
-
-    fn write_table_row(&self, info: &ProcessInfo, entry: &FdEntry) {
-        let mut out = io::stdout().lock();
-        let target = display_target(entry, &self.colors);
-        let kind = display_kind(entry, &self.colors);
-        if self.sizes {
-            let size = entry
-                .size
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "-".to_string());
-            let _ = writeln!(
-                out,
-                "{comm:<19} {pid:>7} {user:<12} {fd:>6} {kind:<10} {size:>10}  {target}",
-                comm = info.comm,
-                pid = info.pid,
-                user = user_of(info),
-                fd = entry.fd,
-            );
-        } else {
-            let _ = writeln!(
-                out,
-                "{comm:<19} {pid:>7} {user:<12} {fd:>6} {kind:<10} {target}",
-                comm = info.comm,
-                pid = info.pid,
-                user = user_of(info),
-                fd = entry.fd,
-            );
-        }
-    }
-
-    pub fn finish(&mut self) {
         if self.tree_mode {
-            self.print_tree();
+            self.print_tree(&st);
             return;
         }
         if self.summary_mode {
-            self.print_summary();
+            self.print_summary(&mut st);
             return;
         }
         match self.format {
             Format::Terse => {
-                let mut out = io::stdout().lock();
-                for pid in &self.pids {
-                    let _ = writeln!(out, "{pid}");
+                let pids: Vec<u32> = st.pids.iter().copied().collect();
+                if let Some(out) = st.line_out.as_mut() {
+                    for pid in &pids {
+                        let _ = writeln!(out, "{pid}");
+                    }
                 }
             }
             Format::Csv => {
-                if let Some(w) = self.csv.as_mut() {
+                if let Some(w) = st.csv.as_mut() {
                     let _ = w.flush();
                 }
             }
             Format::Table => {
-                if self.deleted_total.0 > 0 {
+                if st.deleted_total.0 > 0 {
                     let mut out = io::stderr().lock();
-                    let (count, bytes) = self.deleted_total;
+                    let (count, bytes) = st.deleted_total;
                     let _ = writeln!(
                         out,
                         "openfd: {count} deleted file(s) hold {bytes} reclaimable bytes"
@@ -375,16 +425,19 @@ impl Printer {
             }
             Format::Json => {}
         }
+        if let Some(out) = st.line_out.as_mut() {
+            let _ = out.flush();
+        }
     }
 
-    fn print_summary(&self) {
+    fn print_summary(&self, st: &mut PrinterState) {
         let mut out = io::stdout().lock();
         let _ = writeln!(
             out,
             "{:<7} {:<12} {:<19} {:>6} {:>9} {:>12}",
             "PID", "USER", "COMMAND", "FDS", "DELETED", "DEL_BYTES"
         );
-        for (pid, s) in &self.summary {
+        for (pid, s) in &st.summary {
             let _ = writeln!(
                 out,
                 "{pid:<7} {user:<12} {comm:<19} {count:>6} {df:>9} {db:>12}",
@@ -396,9 +449,9 @@ impl Printer {
             );
         }
 
-        if !self.kind_totals.is_empty() {
+        if !st.kind_totals.is_empty() {
             let mut kinds: Vec<(&'static str, u64)> =
-                self.kind_totals.iter().map(|(k, n)| (*k, *n)).collect();
+                st.kind_totals.iter().map(|(k, n)| (*k, *n)).collect();
             kinds.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
             let parts = kinds
                 .iter()
@@ -409,7 +462,7 @@ impl Printer {
         }
 
         let mut files: Vec<(&String, &u64)> =
-            self.file_targets.iter().filter(|(_, n)| **n > 1).collect();
+            st.file_targets.iter().filter(|(_, n)| **n > 1).collect();
         files.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
         files.truncate(10);
         if !files.is_empty() {
@@ -425,13 +478,13 @@ impl Printer {
     /// Render buffered rows as a process tree: parents above children,
     /// fd rows indented under their process. Orphans (parent not visible)
     /// and pid 1 sit at the top level; cycles are broken defensively.
-    fn print_tree(&self) {
+    fn print_tree(&self, st: &PrinterState) {
         let mut out = io::stdout().lock();
         let mut children: std::collections::HashMap<u32, Vec<u32>> =
             std::collections::HashMap::new();
-        for (pid, proc) in &self.tree {
+        for (pid, proc) in &st.tree {
             let parent = match proc.ppid {
-                Some(ppid) if self.tree.contains_key(&ppid) && ppid != *pid => ppid,
+                Some(ppid) if st.tree.contains_key(&ppid) && ppid != *pid => ppid,
                 _ => 0,
             };
             children.entry(parent).or_default().push(*pid);
@@ -440,13 +493,13 @@ impl Printer {
         let mut roots = children.get(&0).cloned().unwrap_or_default();
         roots.sort_unstable();
         for pid in roots {
-            self.print_tree_node(&mut out, pid, &children, &mut visited, 0);
+            self.print_tree_node(&mut out, st, pid, &children, &mut visited, 0);
         }
         // Defensive: any process not reachable from the roots (a cycle among
         // parents) is printed at the top level too.
-        for &pid in self.tree.keys() {
+        for &pid in st.tree.keys() {
             if !visited.contains(&pid) {
-                self.print_tree_node(&mut out, pid, &children, &mut visited, 0);
+                self.print_tree_node(&mut out, st, pid, &children, &mut visited, 0);
             }
         }
     }
@@ -454,6 +507,7 @@ impl Printer {
     fn print_tree_node(
         &self,
         out: &mut impl io::Write,
+        st: &PrinterState,
         pid: u32,
         children: &std::collections::HashMap<u32, Vec<u32>>,
         visited: &mut std::collections::BTreeSet<u32>,
@@ -462,7 +516,7 @@ impl Printer {
         if !visited.insert(pid) {
             return;
         }
-        let proc = match self.tree.get(&pid) {
+        let proc = match st.tree.get(&pid) {
             Some(p) => p,
             None => return,
         };
@@ -481,7 +535,7 @@ impl Printer {
         }
         if let Some(kids) = children.get(&pid) {
             for &kid in kids {
-                self.print_tree_node(out, kid, children, visited, depth + 1);
+                self.print_tree_node(out, st, kid, children, visited, depth + 1);
             }
         }
     }

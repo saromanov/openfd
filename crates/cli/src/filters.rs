@@ -392,7 +392,6 @@ mod tests {
 
     #[test]
     fn sock_scope_follows_inet_filter() {
-        use openfd_core::SockProto;
         assert_eq!(Filters::default().sock_scope(), SockScope::all());
         let mut f = Filters::default();
         f.set_inet("tcp").unwrap();

@@ -5,8 +5,8 @@
 //!   no materialization of the whole fd table (the Red Hat OOM case).
 //! - Every per-fd failure is skipped: processes exit while we scan them.
 //! - Scans with many processes split across worker threads (one contiguous,
-//!   pid-sorted chunk each); the writer drains the chunks in pid order via
-//!   bounded channels, so output stays a stream with flat memory.
+//!   pid-sorted chunk each); workers call the thread-safe sink directly, so
+//!   memory stays flat and every core pulls its weight.
 //! - Zero unsafe.
 
 use std::fs;
@@ -14,15 +14,10 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::sync_channel;
 
 use crate::classify::{classify, stat_link};
 use crate::passwd::UserTable;
 use crate::types::{Backend, FdEntry, FdKind, FdSink, ProcessInfo, ScanOptions};
-
-/// Bound of each worker's channel: keeps memory flat while decoupling the
-/// workers from the (usually fast) writer.
-const CHANNEL_BOUND: usize = 64;
 
 /// Cap on the worker count: /proc walking is the workload, more than a few
 /// dozen threads buys nothing.
@@ -47,19 +42,17 @@ impl Backend for ProcBackend {
         "proc"
     }
 
-    fn scan(&self, opts: &ScanOptions, sink: &mut FdSink<'_>) -> io::Result<()> {
+    fn scan(&self, opts: &ScanOptions, sink: &FdSink<'_>) -> io::Result<()> {
         let users = if opts.numeric {
             None
         } else {
-            Some(Arc::new(UserTable::load()))
+            Some(UserTable::load())
         };
 
         // One bulk netlink dump per scan; entries are joined by inode below.
         // Netlink failures degrade silently: /proc data stays correct.
         let socks = if opts.resolve_sockets {
-            crate::sockdiag::dump_scope(opts.sock_scope)
-                .ok()
-                .map(Arc::new)
+            crate::sockdiag::dump_scope(opts.sock_scope).ok()
         } else {
             None
         };
@@ -69,14 +62,12 @@ impl Backend for ProcBackend {
         let workers = available_workers();
         if workers <= 1 || pids.len() < opts.parallel_min_pids {
             for &pid in &pids {
-                scan_one(pid, opts, socks.as_deref(), users.as_deref(), sink);
+                scan_one(pid, opts, socks.as_ref(), users.as_ref(), sink);
             }
             return Ok(());
         }
 
-        // Worker threads need 'static data: Arc everything they read.
-        let opts = Arc::new(opts.clone());
-        self.scan_parallel(&pids, &opts, socks, users, sink)
+        self.scan_parallel(&pids, opts, socks.as_ref(), users.as_ref(), sink)
     }
 }
 
@@ -88,64 +79,37 @@ fn available_workers() -> usize {
 }
 
 impl ProcBackend {
-    /// Parallel scan: pid-sorted contiguous chunks, one worker each, writer
-    /// drains the channels in pid order. A spawn failure degrades that chunk
-    /// to an inline scan at the position it would have had anyway.
+    /// Parallel scan: pid-sorted contiguous chunks, one worker each. Workers
+    /// call the sink directly (it must be thread-safe, see [`FdSink`]); rows
+    /// of one process stay ordered, rows of different processes may
+    /// interleave. A spawn failure degrades that chunk to an inline scan.
     fn scan_parallel(
         &self,
         pids: &[u32],
-        opts: &Arc<ScanOptions>,
-        socks: Option<Arc<crate::sockdiag::SockTable>>,
-        users: Option<Arc<UserTable>>,
-        sink: &mut FdSink<'_>,
+        opts: &ScanOptions,
+        socks: Option<&crate::sockdiag::SockTable>,
+        users: Option<&UserTable>,
+        sink: &FdSink<'_>,
     ) -> io::Result<()> {
         let workers = available_workers().min(pids.len()).max(1);
         let chunk_size = pids.len().div_ceil(workers);
 
-        let mut chunks = Vec::with_capacity(workers);
-        let mut rxs = Vec::with_capacity(workers);
-        let mut handles: Vec<Option<std::thread::JoinHandle<()>>> = Vec::with_capacity(workers);
-        for (i, chunk) in pids.chunks(chunk_size).enumerate() {
-            let chunk_pids: Vec<u32> = chunk.to_vec();
-            let chunk_for_list = chunk_pids.clone();
-            let (tx, rx) = sync_channel::<(Arc<ProcessInfo>, FdEntry)>(CHANNEL_BOUND);
-            let opts = Arc::clone(opts);
-            let socks = socks.clone();
-            let users = users.clone();
-            let handle = std::thread::Builder::new()
-                .name(format!("openfd-scan-{i}"))
-                .spawn(move || {
-                    let mut send = move |info: &Arc<ProcessInfo>, entry: &mut FdEntry| {
-                        let _ = tx.send((Arc::clone(info), entry.clone()));
-                    };
-                    for &pid in &chunk_pids {
-                        scan_one(pid, &opts, socks.as_deref(), users.as_deref(), &mut send);
+        std::thread::scope(|scope| {
+            for (i, chunk) in pids.chunks(chunk_size).enumerate() {
+                let spawned = std::thread::Builder::new()
+                    .name(format!("openfd-scan-{i}"))
+                    .spawn_scoped(scope, move || {
+                        for &pid in chunk {
+                            scan_one(pid, opts, socks, users, sink);
+                        }
+                    });
+                if spawned.is_err() {
+                    for &pid in chunk {
+                        scan_one(pid, opts, socks, users, sink);
                     }
-                });
-            match handle {
-                Ok(h) => handles.push(Some(h)),
-                Err(_) => handles.push(None), // fall back to an inline scan later
-            }
-            rxs.push(rx);
-            chunks.push(chunk_for_list);
-        }
-
-        // The writer (this thread) drains the channels in pid order: output
-        // stays a bounded-memory stream, not a materialized snapshot.
-        for (i, rx) in rxs.into_iter().enumerate() {
-            if handles[i].is_none() {
-                for &pid in &chunks[i] {
-                    scan_one(pid, opts, socks.as_deref(), users.as_deref(), sink);
-                }
-            } else {
-                while let Ok((info, mut entry)) = rx.recv() {
-                    sink(&info, &mut entry);
                 }
             }
-            if let Some(h) = handles[i].take() {
-                let _ = h.join();
-            }
-        }
+        });
         Ok(())
     }
 }
@@ -174,7 +138,7 @@ fn scan_one(
     opts: &ScanOptions,
     socks: Option<&crate::sockdiag::SockTable>,
     users: Option<&UserTable>,
-    sink: &mut FdSink<'_>,
+    sink: &FdSink<'_>,
 ) {
     let process_filter = opts.process_filter.as_ref();
     // Cheapest reject first: before /proc/<pid> is read at all.
@@ -200,7 +164,7 @@ fn emit_process_fds(
     info: &Arc<ProcessInfo>,
     opts: &ScanOptions,
     socks: Option<&crate::sockdiag::SockTable>,
-    sink: &mut FdSink<'_>,
+    sink: &FdSink<'_>,
 ) {
     let fd_dir: PathBuf = ["/proc", &pid.to_string(), "fd"].iter().collect();
     let entries = match fs::read_dir(&fd_dir) {
@@ -240,14 +204,40 @@ fn emit_process_fds(
             mode = Some(meta.mode());
         }
 
-        let inode = cls.inode;
-
         let sock = match socks {
             Some(table) => match cls.inode {
                 Some(ino) if cls.kind == FdKind::Socket => table.get(ino).cloned(),
                 _ => None,
             },
             None => None,
+        };
+
+        // Fd-level reject: skip the fdinfo read entirely. The probe entry
+        // carries everything filters may look at (fd, kind, target, deleted,
+        // sock) but not the not-yet-read fdinfo/stat fields.
+        if let Some(f) = &opts.fd_filter {
+            let probe = FdEntry {
+                fd,
+                kind: cls.kind,
+                target: cls.target.clone(),
+                anon_subtype: cls.anon_subtype.clone(),
+                deleted: cls.deleted,
+                size,
+                pos: None,
+                flags: None,
+                inode: cls.inode,
+                mode,
+                sock: sock.clone(),
+            };
+            if !f(&probe) {
+                continue;
+            }
+        }
+
+        let (pos, flags, fdinfo_ino) = if opts.read_fdinfo {
+            read_fdinfo(pid, fd)
+        } else {
+            (None, None, None)
         };
 
         let fd_entry = FdEntry {
@@ -257,32 +247,13 @@ fn emit_process_fds(
             anon_subtype: cls.anon_subtype,
             deleted: cls.deleted,
             size,
-            pos: None,
-            flags: None,
-            inode,
+            pos,
+            flags,
+            inode: cls.inode.or(fdinfo_ino),
             mode,
             sock,
         };
-
-        // Fd-level reject: skip the fdinfo read entirely.
-        if let Some(f) = &opts.fd_filter
-            && !f(&fd_entry)
-        {
-            continue;
-        }
-
-        let mut fd_entry = fd_entry;
-        let (pos, flags, fdinfo_ino) = if opts.read_fdinfo {
-            read_fdinfo(pid, fd)
-        } else {
-            (None, None, None)
-        };
-        fd_entry.pos = pos;
-        fd_entry.flags = flags;
-        if fd_entry.inode.is_none() {
-            fd_entry.inode = fdinfo_ino;
-        }
-        sink(info, &mut fd_entry);
+        sink(info, &fd_entry);
     }
 }
 
