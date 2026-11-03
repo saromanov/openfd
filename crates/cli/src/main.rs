@@ -157,11 +157,7 @@ fn main() -> ExitCode {
 
 /// Block until no entry matches the filters, then exit 0. Useful for
 /// waiting on released files/ports during deploys: `openfd --wait --path X`.
-fn wait_loop(
-    backend: &dyn Backend,
-    opts: &ScanOptions,
-    interval: f64,
-) -> ExitCode {
+fn wait_loop(backend: &dyn Backend, opts: &ScanOptions, interval: f64) -> ExitCode {
     loop {
         let mut matched = 0u64;
         let mut sink = |_info: &std::sync::Arc<ProcessInfo>, _entry: &mut FdEntry| {
@@ -221,12 +217,7 @@ fn snapshot_once(
 /// `--watch`: diff two consecutive scans every tick and print newly opened
 /// (`+`) and closed (`-`) descriptors. Runs until interrupted: Ctrl-C uses
 /// the default SIGINT disposition and terminates the process (exit 130).
-fn run_watch(
-    backend: &dyn Backend,
-    opts: &ScanOptions,
-    interval: f64,
-    colors: Colors,
-) -> ExitCode {
+fn run_watch(backend: &dyn Backend, opts: &ScanOptions, interval: f64, colors: Colors) -> ExitCode {
     let sleep = std::time::Duration::from_secs_f64(interval.max(0.05));
     let mut prev = match snapshot_once(backend, opts) {
         Ok(s) => s,
@@ -287,10 +278,7 @@ fn watch_target(state: &FdState) -> String {
     }
 }
 
-fn count_once(
-    backend: &dyn Backend,
-    opts: &ScanOptions,
-) -> io::Result<FdCounts> {
+fn count_once(backend: &dyn Backend, opts: &ScanOptions) -> io::Result<FdCounts> {
     let mut counts: FdCounts = std::collections::HashMap::new();
     let mut sink = |info: &std::sync::Arc<ProcessInfo>, _entry: &mut FdEntry| {
         let user = match &info.username {
@@ -313,12 +301,7 @@ fn count_once(
 /// `--top`: two scans `interval` seconds apart; report the processes whose
 /// fd count grew the most. A leak shows up as steady growth - run it again
 /// with a larger interval to confirm the trend.
-fn run_top(
-    backend: &dyn Backend,
-    opts: &ScanOptions,
-    n: usize,
-    interval: f64,
-) -> ExitCode {
+fn run_top(backend: &dyn Backend, opts: &ScanOptions, n: usize, interval: f64) -> ExitCode {
     let first = match count_once(backend, opts) {
         Ok(c) => c,
         Err(e) => {

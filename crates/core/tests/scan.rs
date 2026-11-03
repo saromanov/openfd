@@ -170,8 +170,7 @@ fn process_filter_skips_whole_processes() {
 fn process_filter_accepts_pid_gate() {
     // accepts_pid must run before any read: filtering to a foreign pid that
     // matches nothing is fine and cheap (no panic, no entries).
-    let opts = ScanOptions::new()
-        .process_filter(Arc::new(|i: &ProcessInfo| i.pid == u32::MAX));
+    let opts = ScanOptions::new().process_filter(Arc::new(|i: &ProcessInfo| i.pid == u32::MAX));
     let all = collect_all(&opts);
     assert!(all.is_empty(), "no process has pid u32::MAX");
 }
@@ -193,4 +192,36 @@ fn fd_filter_plus_process_filter_compose() {
     let (_, entries) = collect_self(&opts);
     assert!(entries.iter().all(|e| e.fd <= 2));
     assert!(entries.len() >= 3, "fds 0,1,2 exist for any process");
+}
+
+#[test]
+fn parallel_scan_matches_sequential() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("parallel-test.bin");
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(b"parallel").unwrap();
+    f.sync_all().unwrap();
+    let prefix = dir.path().to_string_lossy().into_owned();
+
+    // parallel_min_pids(0) forces the parallel path even on a tiny /proc.
+    // Sibling tests spawn and exit while this runs, so only entries under
+    // our own tempdir are stable enough to compare.
+    let mut stable = |opts: &ScanOptions| {
+        let (_, entries) = collect_self(opts);
+        let hit = entries.iter().any(|e| e.target == path.to_string_lossy());
+        assert!(hit, "scan must find our own open file");
+        let mut k: Vec<(i32, String)> = entries
+            .iter()
+            .filter(|e| e.target.starts_with(&prefix))
+            .map(|e| (e.fd, e.target.clone()))
+            .collect();
+        k.sort();
+        k
+    };
+
+    let par = stable(&ScanOptions::new().stat_all().parallel_min_pids(0));
+    let par_again = stable(&ScanOptions::new().stat_all().parallel_min_pids(0));
+    let seq = stable(&ScanOptions::new().stat_all());
+    assert_eq!(par, par_again, "two parallel scans agree");
+    assert_eq!(par, seq, "parallel == sequential");
 }

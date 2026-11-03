@@ -3,9 +3,7 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 
-use openfd_core::{
-    FdEntry, ProcessFilter, ProcessInfo, SockAddr, SockInfo, SockProto, SockScope,
-};
+use openfd_core::{FdEntry, ProcessFilter, ProcessInfo, SockAddr, SockInfo, SockProto, SockScope};
 
 /// Parsed `-i` filter: lsof-style `[proto][:port][@addr]`, restricted to
 /// literal IPs (no DNS - openfd performs no network access).
@@ -278,7 +276,8 @@ impl ProcessFilter for Filters {
 
 /// `-c` semantics: case-insensitive match against comm and, when available,
 /// the basename of the first cmdline element.
-fn command_matches(want: &str, info: &ProcessInfo) -> bool {    if info.comm.eq_ignore_ascii_case(want) {
+fn command_matches(want: &str, info: &ProcessInfo) -> bool {
+    if info.comm.eq_ignore_ascii_case(want) {
         return true;
     }
     if let Some(cmd0) = &info.cmdline0 {

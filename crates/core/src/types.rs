@@ -196,6 +196,10 @@ pub struct ScanOptions {
     /// Which netlink SOCK_DIAG tables to dump (default: all). Ignored when
     /// `resolve_sockets` is false.
     pub sock_scope: SockScope,
+    /// Minimum process count before the scan switches to worker threads.
+    /// Below it, thread startup and channel overhead would cost more than
+    /// the scan saves. Default: 32.
+    pub(crate) parallel_min_pids: usize,
     /// Reject whole processes before any fd work. None = keep everything.
     pub process_filter: Option<Arc<dyn ProcessFilter>>,
     /// Reject single fds after readlink+classify+socket-join but before the
@@ -213,6 +217,7 @@ impl std::fmt::Debug for ScanOptions {
             .field("resolve_sockets", &self.resolve_sockets)
             .field("read_fdinfo", &self.read_fdinfo)
             .field("sock_scope", &self.sock_scope)
+            .field("parallel_min_pids", &self.parallel_min_pids)
             .field("process_filter", &self.process_filter.is_some())
             .field("fd_filter", &self.fd_filter.is_some())
             .finish()
@@ -227,6 +232,7 @@ impl Default for ScanOptions {
             resolve_sockets: true,
             read_fdinfo: true,
             sock_scope: SockScope::all(),
+            parallel_min_pids: 32,
             process_filter: None,
             fd_filter: None,
         }
@@ -268,6 +274,13 @@ impl ScanOptions {
         self
     }
 
+    /// Lower the process count needed to switch the scan to worker threads
+    /// (testing and tuning; the built-in floor of 32 always applies).
+    pub fn parallel_min_pids(mut self, n: usize) -> Self {
+        self.parallel_min_pids = n;
+        self
+    }
+
     /// Reject whole processes before any fd work on them.
     pub fn process_filter(mut self, f: Arc<dyn ProcessFilter>) -> Self {
         self.process_filter = Some(f);
@@ -276,10 +289,7 @@ impl ScanOptions {
 
     /// Reject single fds before the fdinfo read (see the field docs for
     /// what the entry contains at that point).
-    pub fn fd_filter(
-        mut self,
-        f: Arc<dyn Fn(&FdEntry) -> bool + Send + Sync>,
-    ) -> Self {
+    pub fn fd_filter(mut self, f: Arc<dyn Fn(&FdEntry) -> bool + Send + Sync>) -> Self {
         self.fd_filter = Some(f);
         self
     }

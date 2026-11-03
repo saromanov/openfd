@@ -4,6 +4,9 @@
 //! - One pass over `/proc`, one pass over each `fd` directory. No fork/exec,
 //!   no materialization of the whole fd table (the Red Hat OOM case).
 //! - Every per-fd failure is skipped: processes exit while we scan them.
+//! - Scans with many processes split across worker threads (one contiguous,
+//!   pid-sorted chunk each); the writer drains the chunks in pid order via
+//!   bounded channels, so output stays a stream with flat memory.
 //! - Zero unsafe.
 
 use std::fs;
@@ -11,10 +14,19 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::sync_channel;
 
 use crate::classify::{classify, stat_link};
 use crate::passwd::UserTable;
 use crate::types::{Backend, FdEntry, FdKind, FdSink, ProcessInfo, ScanOptions};
+
+/// Bound of each worker's channel: keeps memory flat while decoupling the
+/// workers from the (usually fast) writer.
+const CHANNEL_BOUND: usize = 64;
+
+/// Cap on the worker count: /proc walking is the workload, more than a few
+/// dozen threads buys nothing.
+const MAX_WORKERS: usize = 32;
 
 pub struct ProcBackend;
 
@@ -39,47 +51,148 @@ impl Backend for ProcBackend {
         let users = if opts.numeric {
             None
         } else {
-            Some(UserTable::load())
+            Some(Arc::new(UserTable::load()))
         };
 
         // One bulk netlink dump per scan; entries are joined by inode below.
         // Netlink failures degrade silently: /proc data stays correct.
         let socks = if opts.resolve_sockets {
-            crate::sockdiag::dump_scope(opts.sock_scope).ok()
+            crate::sockdiag::dump_scope(opts.sock_scope)
+                .ok()
+                .map(Arc::new)
         } else {
             None
         };
 
-        let proc_dir = Path::new("/proc");
-        let process_filter = opts.process_filter.as_ref();
-        for entry in fs::read_dir(proc_dir)? {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let pid: u32 = match entry.file_name().to_string_lossy().parse() {
-                Ok(p) => p,
-                Err(_) => continue, // not a process directory
-            };
-            // Cheapest reject first: before /proc/<pid> is read at all.
-            if let Some(f) = process_filter
-                && !f.accepts_pid(pid)
-            {
-                continue;
+        let pids = list_pids()?;
+
+        let workers = available_workers();
+        if workers <= 1 || pids.len() < opts.parallel_min_pids {
+            for &pid in &pids {
+                scan_one(pid, opts, socks.as_deref(), users.as_deref(), sink);
             }
-            let info = match read_process(pid, users.as_ref()) {
-                Some(info) => Arc::new(info),
-                None => continue,
-            };
-            if let Some(f) = process_filter
-                && !f.accepts(&info)
-            {
-                continue;
+            return Ok(());
+        }
+
+        // Worker threads need 'static data: Arc everything they read.
+        let opts = Arc::new(opts.clone());
+        self.scan_parallel(&pids, &opts, socks, users, sink)
+    }
+}
+
+fn available_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(MAX_WORKERS)
+}
+
+impl ProcBackend {
+    /// Parallel scan: pid-sorted contiguous chunks, one worker each, writer
+    /// drains the channels in pid order. A spawn failure degrades that chunk
+    /// to an inline scan at the position it would have had anyway.
+    fn scan_parallel(
+        &self,
+        pids: &[u32],
+        opts: &Arc<ScanOptions>,
+        socks: Option<Arc<crate::sockdiag::SockTable>>,
+        users: Option<Arc<UserTable>>,
+        sink: &mut FdSink<'_>,
+    ) -> io::Result<()> {
+        let workers = available_workers().min(pids.len()).max(1);
+        let chunk_size = pids.len().div_ceil(workers);
+
+        let mut chunks = Vec::with_capacity(workers);
+        let mut rxs = Vec::with_capacity(workers);
+        let mut handles: Vec<Option<std::thread::JoinHandle<()>>> = Vec::with_capacity(workers);
+        for (i, chunk) in pids.chunks(chunk_size).enumerate() {
+            let chunk_pids: Vec<u32> = chunk.to_vec();
+            let chunk_for_list = chunk_pids.clone();
+            let (tx, rx) = sync_channel::<(Arc<ProcessInfo>, FdEntry)>(CHANNEL_BOUND);
+            let opts = Arc::clone(opts);
+            let socks = socks.clone();
+            let users = users.clone();
+            let handle = std::thread::Builder::new()
+                .name(format!("openfd-scan-{i}"))
+                .spawn(move || {
+                    let mut send = move |info: &Arc<ProcessInfo>, entry: &mut FdEntry| {
+                        let _ = tx.send((Arc::clone(info), entry.clone()));
+                    };
+                    for &pid in &chunk_pids {
+                        scan_one(pid, &opts, socks.as_deref(), users.as_deref(), &mut send);
+                    }
+                });
+            match handle {
+                Ok(h) => handles.push(Some(h)),
+                Err(_) => handles.push(None), // fall back to an inline scan later
             }
-            emit_process_fds(pid, &info, opts, socks.as_ref(), sink);
+            rxs.push(rx);
+            chunks.push(chunk_for_list);
+        }
+
+        // The writer (this thread) drains the channels in pid order: output
+        // stays a bounded-memory stream, not a materialized snapshot.
+        for (i, rx) in rxs.into_iter().enumerate() {
+            if handles[i].is_none() {
+                for &pid in &chunks[i] {
+                    scan_one(pid, opts, socks.as_deref(), users.as_deref(), sink);
+                }
+            } else {
+                while let Ok((info, mut entry)) = rx.recv() {
+                    sink(&info, &mut entry);
+                }
+            }
+            if let Some(h) = handles[i].take() {
+                let _ = h.join();
+            }
         }
         Ok(())
     }
+}
+
+/// Sorted numeric pid list from /proc; a broken /proc mount is the only
+/// hard error.
+fn list_pids() -> io::Result<Vec<u32>> {
+    let mut pids = Vec::new();
+    for entry in fs::read_dir(Path::new("/proc"))? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() {
+            pids.push(pid);
+        }
+    }
+    pids.sort_unstable();
+    Ok(pids)
+}
+
+/// Scan one process: cheap pid reject, metadata read, full reject, then the
+/// fd loop. Shared by the sequential and the parallel paths.
+fn scan_one(
+    pid: u32,
+    opts: &ScanOptions,
+    socks: Option<&crate::sockdiag::SockTable>,
+    users: Option<&UserTable>,
+    sink: &mut FdSink<'_>,
+) {
+    let process_filter = opts.process_filter.as_ref();
+    // Cheapest reject first: before /proc/<pid> is read at all.
+    if let Some(f) = process_filter
+        && !f.accepts_pid(pid)
+    {
+        return;
+    }
+    let info = match read_process(pid, users) {
+        Some(info) => Arc::new(info),
+        None => return,
+    };
+    if let Some(f) = process_filter
+        && !f.accepts(&info)
+    {
+        return;
+    }
+    emit_process_fds(pid, &info, opts, socks, sink);
 }
 
 fn emit_process_fds(

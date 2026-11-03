@@ -561,8 +561,7 @@ mod scope_tests {
     fn tcp_scope_skips_other_tables() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let table =
-            dump_scope(SockScope::inet_only(true, false)).expect("tcp-only dump must work");
+        let table = dump_scope(SockScope::inet_only(true, false)).expect("tcp-only dump must work");
 
         let hit = table.tcp.values().any(|s| {
             matches!((&s.local, s.state), (SockAddr::Inet { port: p, .. }, Some("LISTEN")) if *p == port)
