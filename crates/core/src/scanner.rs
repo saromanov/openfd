@@ -45,7 +45,7 @@ impl Backend for ProcBackend {
         // One bulk netlink dump per scan; entries are joined by inode below.
         // Netlink failures degrade silently: /proc data stays correct.
         let socks = if opts.resolve_sockets {
-            crate::sockdiag::dump_all().ok()
+            crate::sockdiag::dump_scope(opts.sock_scope).ok()
         } else {
             None
         };

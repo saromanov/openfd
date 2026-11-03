@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use openfd_core::{
-    FdEntry, ProcessFilter, ProcessInfo, SockAddr, SockInfo, SockProto,
+    FdEntry, ProcessFilter, ProcessInfo, SockAddr, SockInfo, SockProto, SockScope,
 };
 
 /// Parsed `-i` filter: lsof-style `[proto][:port][@addr]`, restricted to
@@ -249,6 +249,19 @@ impl Filters {
         self.inet = Some(InetFilter::parse(spec)?);
         Ok(())
     }
+
+    /// Which netlink SOCK_DIAG tables the scan needs for this filter:
+    /// `-i tcp` dumps TCP only, `-i unix` dumps unix only, no `-i` dumps all.
+    pub fn sock_scope(&self) -> SockScope {
+        match &self.inet {
+            None => SockScope::all(),
+            Some(f) if f.unix => SockScope::unix_only(),
+            Some(f) => SockScope::inet_only(
+                f.proto.is_none() || f.proto == Some(SockProto::Tcp),
+                f.proto.is_none() || f.proto == Some(SockProto::Udp),
+            ),
+        }
+    }
 }
 
 /// Push the process-level part of the filter into the scanner: rejected
@@ -376,6 +389,24 @@ mod tests {
             &entry(0, "/tmp", false)
         ));
         assert!(!f.matches(&info(1, 0, "postgres", None), &entry(0, "/tmp", false)));
+    }
+
+    #[test]
+    fn sock_scope_follows_inet_filter() {
+        use openfd_core::SockProto;
+        assert_eq!(Filters::default().sock_scope(), SockScope::all());
+        let mut f = Filters::default();
+        f.set_inet("tcp").unwrap();
+        assert_eq!(f.sock_scope(), SockScope::inet_only(true, false));
+        let mut f = Filters::default();
+        f.set_inet("udp:53").unwrap();
+        assert_eq!(f.sock_scope(), SockScope::inet_only(false, true));
+        let mut f = Filters::default();
+        f.set_inet("").unwrap();
+        assert_eq!(f.sock_scope(), SockScope::inet_only(true, true));
+        let mut f = Filters::default();
+        f.set_inet("unix").unwrap();
+        assert_eq!(f.sock_scope(), SockScope::unix_only());
     }
 
     #[test]

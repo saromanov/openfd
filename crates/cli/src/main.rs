@@ -104,6 +104,7 @@ fn main() -> ExitCode {
     // directory opened, rejected fds never trigger the fdinfo read.
     let shared_filters = Arc::new(filters);
     opts = opts
+        .sock_scope(shared_filters.sock_scope())
         .process_filter(shared_filters.clone() as Arc<dyn ProcessFilter>)
         .fd_filter({
             let f = shared_filters.clone();

@@ -20,7 +20,7 @@ pub mod types;
 
 pub use types::{
     AddrFamily, Backend, FdEntry, FdKind, FdSink, ProcessFilter, ProcessInfo, ScanOptions,
-    SockAddr, SockInfo, SockProto,
+    SockAddr, SockInfo, SockProto, SockScope,
 };
 
 /// The backend for the current platform.

@@ -92,6 +92,61 @@ pub struct FdEntry {
     pub sock: Option<SockInfo>,
 }
 
+/// Which socket tables the netlink SOCK_DIAG dump should fetch. Derived
+/// from the `-i` filter: `-i tcp` does not need UDP or unix tables, so the
+/// scan skips those dumps entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SockScope {
+    /// Dump inet sockets at all.
+    pub inet: bool,
+    /// Include TCP (implies `inet`).
+    pub tcp: bool,
+    /// Include UDP (implies `inet`).
+    pub udp: bool,
+    /// Include unix sockets.
+    pub unix: bool,
+}
+
+impl SockScope {
+    pub fn all() -> Self {
+        SockScope {
+            inet: true,
+            tcp: true,
+            udp: true,
+            unix: true,
+        }
+    }
+
+    pub fn none() -> Self {
+        SockScope {
+            inet: false,
+            tcp: false,
+            udp: false,
+            unix: false,
+        }
+    }
+
+    /// Inet sockets only, restricted to these protocols (tcp/udp flags).
+    pub fn inet_only(tcp: bool, udp: bool) -> Self {
+        SockScope {
+            inet: tcp || udp,
+            tcp,
+            udp,
+            unix: false,
+        }
+    }
+
+    /// Unix sockets only.
+    pub fn unix_only() -> Self {
+        SockScope {
+            inet: false,
+            tcp: false,
+            udp: false,
+            unix: true,
+        }
+    }
+}
+
 /// Callback receiving a resolved process and one of its fds.
 pub type FdSink<'a> = dyn FnMut(&Arc<ProcessInfo>, &mut FdEntry) + 'a;
 
@@ -138,6 +193,9 @@ pub struct ScanOptions {
     /// file read per fd — skip it when the consumer does not need these
     /// fields (human table/terse/watch/top modes). Default: true.
     pub read_fdinfo: bool,
+    /// Which netlink SOCK_DIAG tables to dump (default: all). Ignored when
+    /// `resolve_sockets` is false.
+    pub sock_scope: SockScope,
     /// Reject whole processes before any fd work. None = keep everything.
     pub process_filter: Option<Arc<dyn ProcessFilter>>,
     /// Reject single fds after readlink+classify+socket-join but before the
@@ -154,6 +212,7 @@ impl std::fmt::Debug for ScanOptions {
             .field("stat_all", &self.stat_all)
             .field("resolve_sockets", &self.resolve_sockets)
             .field("read_fdinfo", &self.read_fdinfo)
+            .field("sock_scope", &self.sock_scope)
             .field("process_filter", &self.process_filter.is_some())
             .field("fd_filter", &self.fd_filter.is_some())
             .finish()
@@ -167,6 +226,7 @@ impl Default for ScanOptions {
             stat_all: false,
             resolve_sockets: true,
             read_fdinfo: true,
+            sock_scope: SockScope::all(),
             process_filter: None,
             fd_filter: None,
         }
@@ -199,6 +259,12 @@ impl ScanOptions {
     /// the scan's CPU cost.
     pub fn no_fdinfo(mut self) -> Self {
         self.read_fdinfo = false;
+        self
+    }
+
+    /// Restrict the netlink SOCK_DIAG dump to these socket tables.
+    pub fn sock_scope(mut self, scope: SockScope) -> Self {
+        self.sock_scope = scope;
         self
     }
 

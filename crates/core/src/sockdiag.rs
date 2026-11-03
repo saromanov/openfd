@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::types::{AddrFamily, SockAddr, SockInfo, SockProto};
+use crate::types::{AddrFamily, SockAddr, SockInfo, SockProto, SockScope};
 
 // ---- netlink message constants (include/uapi/linux/netlink.h et al) ----
 
@@ -259,10 +259,22 @@ impl SockTable {
 /// Dump every visible socket via netlink. Errors are reported to the caller,
 /// which decides whether to degrade (no socket details) or fail.
 pub fn dump_all() -> std::io::Result<SockTable> {
+    dump_scope(SockScope::all())
+}
+
+/// Dump only the socket tables the caller needs (see [`SockScope`]):
+/// `-i tcp` skips the UDP and unix dumps entirely.
+pub fn dump_scope(scope: SockScope) -> std::io::Result<SockTable> {
     let mut table = SockTable::default();
-    dump_inet(IPPROTO_TCP, &mut table.tcp)?;
-    dump_inet(IPPROTO_UDP, &mut table.udp)?;
-    dump_unix(&mut table.unix)?;
+    if scope.tcp {
+        dump_inet(IPPROTO_TCP, &mut table.tcp)?;
+    }
+    if scope.udp {
+        dump_inet(IPPROTO_UDP, &mut table.udp)?;
+    }
+    if scope.unix {
+        dump_unix(&mut table.unix)?;
+    }
     Ok(table)
 }
 
@@ -537,5 +549,38 @@ mod live_tests {
             .values()
             .any(|s| s.local == SockAddr::Unix(path.to_string_lossy().into_owned()));
         assert!(hit, "bound unix socket path must appear in unix_diag dump");
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn tcp_scope_skips_other_tables() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let table =
+            dump_scope(SockScope::inet_only(true, false)).expect("tcp-only dump must work");
+
+        let hit = table.tcp.values().any(|s| {
+            matches!((&s.local, s.state), (SockAddr::Inet { port: p, .. }, Some("LISTEN")) if *p == port)
+        });
+        assert!(hit, "own LISTEN socket {port} must appear in tcp-only dump");
+        assert!(
+            table.udp.is_empty() && table.unix.is_empty(),
+            "udp/unix tables must stay empty under a tcp-only scope"
+        );
+    }
+
+    #[test]
+    fn unix_scope_skips_inet() {
+        let table = dump_scope(SockScope::unix_only()).expect("unix-only dump must work");
+        assert!(
+            table.tcp.is_empty() && table.udp.is_empty(),
+            "inet tables must stay empty under a unix-only scope"
+        );
+        assert!(!table.unix.is_empty(), "unix table must be dumped");
     }
 }
