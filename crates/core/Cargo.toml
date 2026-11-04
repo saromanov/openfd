@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Core fd-scanning library for openfd: /proc backend and classification"
 
 [dependencies]
-netlink-sys = "0.4"
+netlink-sys = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
