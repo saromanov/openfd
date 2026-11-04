@@ -3,8 +3,12 @@
 [![CI](https://github.com/saromanov/openfd/actions/workflows/ci.yml/badge.svg)](https://github.com/saromanov/openfd/actions/workflows/ci.yml)
 [![release](https://github.com/saromanov/openfd/actions/workflows/release.yml/badge.svg)](https://github.com/saromanov/openfd/actions/workflows/release.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![crates.io](https://img.shields.io/crates/v/openfd.svg)](https://crates.io/crates/openfd)
+[![docs.rs](https://img.shields.io/docsrs/openfd-core)](https://docs.rs/openfd-core)
 
 **lsof that answers instantly** — a fast, streaming file-descriptor scanner for Linux.
+
+![openfd demo](docs/demo.gif)
 
 `lsof` on busy systems takes minutes, burns a full CPU core and can exhaust memory
 ([Red Hat knowledge base](https://access.redhat.com/solutions/7002308)). `openfd` reads
@@ -48,6 +52,12 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
   no `ss`/`lsof`/`awk` pipelines.
 
 ## Install
+
+From crates.io (Rust 1.88+):
+
+```sh
+cargo install openfd
+```
 
 Homebrew (Linux):
 
