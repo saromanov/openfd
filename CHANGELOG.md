@@ -4,7 +4,23 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com) and the project adheres
 to [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [0.2.1] - 2026-11-18
+
+### Fixed
+
+- `-i @ADDR:PORT` (for example `-i @127.0.0.1:8080`), the form documented
+  in the README and `--help`, was rejected with "unsupported -i syntax".
+  The address branch swallowed the colon, so the port parser never ran.
+
+### Changed
+
+- `netlink-sys` 0.9: the SOCK_DIAG socket now uses the `protocols` constants
+  and a `bytes::BufMut` receive buffer.
+- `clap_mangen` 0.3 for the man-page generator.
+- Line coverage raised to 95% (was 79%); CI uploads it to Codecov and the
+  README shows the badge.
+
+## [0.2.0] - 2026-11-04
 
 ### Added
 
