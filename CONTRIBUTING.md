@@ -27,3 +27,5 @@ exited processes during scan`, `docs: ...`, `ci: ...`.
   hermetic (temp files via `tempfile`, no network, no other-user assumptions).
 - The lsof snapshot harness is opt-in:
   `OPENFD_SNAPSHOT=1 cargo test -p openfd --test snapshot_lsof`.
+- Coverage: `cargo llvm-cov --workspace --all-features --summary-only`
+  (needs `cargo install cargo-llvm-cov`). CI uploads `lcov.info` to Codecov.

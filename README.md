@@ -1,6 +1,7 @@
 # openfd
 
 [![CI](https://github.com/saromanov/openfd/actions/workflows/ci.yml/badge.svg)](https://github.com/saromanov/openfd/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/saromanov/openfd/branch/master/graph/badge.svg)](https://codecov.io/gh/saromanov/openfd)
 [![release](https://github.com/saromanov/openfd/actions/workflows/release.yml/badge.svg)](https://github.com/saromanov/openfd/actions/workflows/release.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![crates.io](https://img.shields.io/crates/v/openfd.svg)](https://crates.io/crates/openfd)
