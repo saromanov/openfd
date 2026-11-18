@@ -45,8 +45,8 @@ impl InetFilter {
         if rest.is_empty() {
             return Ok(f);
         }
-        // optional @addr then optional :port (lsof order), but also accept
-        // :port without addr ("tcp:443")
+        // optional @addr with optional :port (lsof order), or :port alone
+        // ("tcp:443")
         if let Some(r) = rest.strip_prefix('@') {
             let (host, tail) = match r.split_once(':') {
                 Some((h, t)) => (h, Some(t)),
@@ -59,7 +59,14 @@ impl InetFilter {
                 host.parse()
                     .map_err(|_| format!("not a literal IP: {host}"))?,
             );
-            rest = tail.unwrap_or("");
+            if let Some(port_str) = tail {
+                f.port = Some(
+                    port_str
+                        .parse()
+                        .map_err(|_| format!("invalid port: {port_str}"))?,
+                );
+            }
+            return Ok(f);
         }
         if let Some(port_str) = rest.strip_prefix(':') {
             f.port = Some(
@@ -491,5 +498,204 @@ mod dir_tests {
         assert!(f.matches(&i, &entry(3, "/var/log")));
         assert!(!f.matches(&i, &entry(3, "/var/logx")));
         assert!(!f.matches(&i, &entry(3, "/tmp/x")));
+    }
+}
+
+#[cfg(test)]
+mod inet_tests {
+    use super::*;
+    use openfd_core::{AddrFamily, FdKind};
+
+    fn info() -> ProcessInfo {
+        ProcessInfo {
+            pid: 1,
+            ppid: None,
+            comm: "x".to_string(),
+            cmdline0: None,
+            uid: 0,
+            username: Some("root".to_string()),
+        }
+    }
+
+    fn inet(addr: &str, port: u16) -> SockAddr {
+        SockAddr::Inet {
+            addr: addr.parse().unwrap(),
+            port,
+        }
+    }
+
+    fn sock_entry(proto: SockProto, local: SockAddr, remote: Option<SockAddr>) -> FdEntry {
+        FdEntry {
+            fd: 3,
+            kind: FdKind::Socket,
+            target: "socket:[1]".to_string(),
+            anon_subtype: None,
+            deleted: false,
+            size: None,
+            pos: None,
+            flags: None,
+            inode: Some(1),
+            mode: None,
+            sock: Some(SockInfo {
+                proto,
+                family: if proto == SockProto::Unix {
+                    AddrFamily::Unix
+                } else {
+                    AddrFamily::V4
+                },
+                local,
+                remote,
+                state: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bad_suffixes() {
+        assert!(InetFilter::parse("unix:80").is_err());
+        assert!(InetFilter::parse("unix@127.0.0.1").is_err());
+        assert!(InetFilter::parse("unixbogus").is_err());
+        assert!(InetFilter::parse("@").is_err());
+        assert!(InetFilter::parse("@:80").is_err());
+        assert!(InetFilter::parse("tcp:notaport").is_err());
+        assert!(InetFilter::parse("tcp1.2.3.4").is_err());
+        assert!(InetFilter::parse("1.2.3.4").is_err());
+        assert!(InetFilter::parse("@example.com").is_err(), "no DNS allowed");
+    }
+
+    #[test]
+    fn parse_accepts_the_lsof_shapes() {
+        let any = InetFilter::parse("").unwrap();
+        assert!(!any.unix && any.proto.is_none() && any.port.is_none() && any.addr.is_none());
+
+        let addr_only = InetFilter::parse("@127.0.0.1").unwrap();
+        assert_eq!(addr_only.addr, Some("127.0.0.1".parse().unwrap()));
+        assert!(addr_only.port.is_none());
+
+        let both = InetFilter::parse("tcp@127.0.0.1:443").unwrap();
+        assert_eq!(both.proto, Some(SockProto::Tcp));
+        assert_eq!(both.port, Some(443));
+        assert_eq!(both.addr, Some("127.0.0.1".parse().unwrap()));
+
+        let port = InetFilter::parse(":8080").unwrap();
+        assert_eq!(port.port, Some(8080));
+        assert!(port.proto.is_none());
+    }
+
+    #[test]
+    fn inet_filter_excludes_unix_sockets() {
+        let mut f = Filters::default();
+        f.set_inet("").unwrap();
+        let unix = sock_entry(
+            SockProto::Unix,
+            SockAddr::Unix("/run/x.sock".to_string()),
+            None,
+        );
+        assert!(!f.matches(&info(), &unix), "bare -i means inet only");
+    }
+
+    #[test]
+    fn proto_filter_rejects_other_transport() {
+        let mut f = Filters::default();
+        f.set_inet("tcp").unwrap();
+        let udp = sock_entry(SockProto::Udp, inet("127.0.0.1", 53), None);
+        assert!(!f.matches(&info(), &udp));
+        let tcp = sock_entry(SockProto::Tcp, inet("127.0.0.1", 53), None);
+        assert!(f.matches(&info(), &tcp));
+    }
+
+    #[test]
+    fn port_filter_matches_local_or_remote() {
+        let mut f = Filters::default();
+        f.set_inet(":443").unwrap();
+        let remote_hit = sock_entry(
+            SockProto::Tcp,
+            inet("10.0.0.1", 51_000),
+            Some(inet("10.0.0.2", 443)),
+        );
+        assert!(f.matches(&info(), &remote_hit), "remote port counts");
+        let miss = sock_entry(SockProto::Tcp, inet("10.0.0.1", 80), None);
+        assert!(!f.matches(&info(), &miss));
+        // A non-inet local address cannot match a port filter.
+        let odd = sock_entry(SockProto::Tcp, SockAddr::Unix("x".to_string()), None);
+        assert!(!f.matches(&info(), &odd));
+    }
+
+    #[test]
+    fn addr_filter_matches_local_or_remote() {
+        let mut f = Filters::default();
+        f.set_inet("tcp@127.0.0.1").unwrap();
+        let local_hit = sock_entry(SockProto::Tcp, inet("127.0.0.1", 80), None);
+        assert!(f.matches(&info(), &local_hit));
+        let remote_hit = sock_entry(
+            SockProto::Tcp,
+            inet("10.0.0.1", 80),
+            Some(inet("127.0.0.1", 80)),
+        );
+        assert!(f.matches(&info(), &remote_hit), "remote address counts");
+        let miss = sock_entry(SockProto::Tcp, inet("10.0.0.1", 80), None);
+        assert!(!f.matches(&info(), &miss));
+        // Non-inet endpoints never match an address filter.
+        let odd = sock_entry(SockProto::Tcp, SockAddr::Unix("x".to_string()), None);
+        assert!(!f.matches(&info(), &odd));
+    }
+
+    #[test]
+    fn entry_without_socket_is_rejected_by_inet_filter() {
+        let mut f = Filters::default();
+        f.set_inet("tcp").unwrap();
+        let plain = FdEntry {
+            fd: 3,
+            kind: FdKind::File,
+            target: "/tmp/x".to_string(),
+            anon_subtype: None,
+            deleted: false,
+            size: None,
+            pos: None,
+            flags: None,
+            inode: None,
+            mode: None,
+            sock: None,
+        };
+        assert!(!f.matches(&info(), &plain));
+    }
+
+    #[test]
+    fn user_filter_rejects_other_names() {
+        let mut f = Filters::default();
+        f.set_users("bob");
+        assert!(!f.matches_process(&info()));
+    }
+
+    #[test]
+    fn dir_filter_tolerates_repeated_trailing_slashes() {
+        let mut f = Filters::default();
+        f.set_dir("/var/log///");
+        let entry = FdEntry {
+            fd: 3,
+            kind: FdKind::File,
+            target: "/var/log/syslog".to_string(),
+            anon_subtype: None,
+            deleted: false,
+            size: None,
+            pos: None,
+            flags: None,
+            inode: None,
+            mode: None,
+            sock: None,
+        };
+        assert!(f.matches(&info(), &entry));
+    }
+
+    #[test]
+    fn accepts_pid_mirrors_the_pid_filter() {
+        let mut f = Filters::default();
+        assert!(
+            ProcessFilter::accepts_pid(&f, 42),
+            "no pid filter accepts all"
+        );
+        f.set_pids("42").unwrap();
+        assert!(ProcessFilter::accepts_pid(&f, 42));
+        assert!(!ProcessFilter::accepts_pid(&f, 43));
     }
 }
