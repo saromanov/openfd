@@ -371,3 +371,180 @@ pub trait Backend {
     /// be thread-safe: parallel scans call it from several workers.
     fn scan(&self, opts: &ScanOptions, sink: &FdSink<'_>) -> std::io::Result<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(pid: u32) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid: Some(1),
+            comm: "x".to_string(),
+            cmdline0: None,
+            uid: 1000,
+            username: None,
+        }
+    }
+
+    #[test]
+    fn fd_kind_tags_are_stable() {
+        let expected = [
+            (FdKind::File, "file"),
+            (FdKind::Directory, "dir"),
+            (FdKind::Socket, "socket"),
+            (FdKind::Pipe, "pipe"),
+            (FdKind::CharDevice, "chr"),
+            (FdKind::BlockDevice, "blk"),
+            (FdKind::Memfd, "memfd"),
+            (FdKind::AnonInode, "anon_inode"),
+            (FdKind::Unknown, "unknown"),
+        ];
+        for (kind, tag) in expected {
+            assert_eq!(kind.tag(), tag, "tag of {kind:?}");
+        }
+    }
+
+    #[test]
+    fn sock_scope_constructors() {
+        assert_eq!(
+            SockScope::all(),
+            SockScope {
+                inet: true,
+                tcp: true,
+                udp: true,
+                unix: true
+            }
+        );
+        assert_eq!(
+            SockScope::none(),
+            SockScope {
+                inet: false,
+                tcp: false,
+                udp: false,
+                unix: false
+            }
+        );
+        assert_eq!(
+            SockScope::inet_only(true, false),
+            SockScope {
+                inet: true,
+                tcp: true,
+                udp: false,
+                unix: false
+            }
+        );
+        assert_eq!(
+            SockScope::unix_only(),
+            SockScope {
+                inet: false,
+                tcp: false,
+                udp: false,
+                unix: true
+            }
+        );
+        assert!(
+            !SockScope::inet_only(false, false).inet,
+            "no protocol selected means no inet dump"
+        );
+    }
+
+    #[test]
+    fn scan_options_defaults() {
+        let opts = ScanOptions::new();
+        assert!(!opts.numeric);
+        assert!(!opts.stat_all);
+        assert!(opts.resolve_sockets);
+        assert!(opts.read_fdinfo);
+        assert_eq!(opts.sock_scope, SockScope::all());
+        assert_eq!(opts.parallel_min_pids, 32);
+        assert!(opts.process_filter.is_none());
+        assert!(opts.fd_filter.is_none());
+        assert_eq!(
+            opts.parallel_min_pids,
+            ScanOptions::default().parallel_min_pids
+        );
+    }
+
+    #[test]
+    fn scan_options_builders_flip_their_flag() {
+        let opts = ScanOptions::new()
+            .numeric()
+            .stat_all()
+            .no_sockets()
+            .no_fdinfo()
+            .sock_scope(SockScope::unix_only())
+            .parallel_min_pids(1);
+        assert!(opts.numeric);
+        assert!(opts.stat_all);
+        assert!(!opts.resolve_sockets);
+        assert!(!opts.read_fdinfo);
+        assert_eq!(opts.sock_scope, SockScope::unix_only());
+        assert_eq!(opts.parallel_min_pids, 1);
+    }
+
+    #[test]
+    fn scan_options_hooks_and_debug() {
+        let opts = ScanOptions::new().process_filter(Arc::new(|i: &ProcessInfo| i.pid == 1));
+        let opts = opts.fd_filter(Arc::new(|e: &FdEntry| e.fd > 2));
+        let debug = format!("{opts:?}");
+        assert!(debug.contains("process_filter: true"), "{debug}");
+        assert!(debug.contains("fd_filter: true"), "{debug}");
+        assert!(debug.contains("resolve_sockets: true"), "{debug}");
+        assert!(opts.process_filter.as_ref().unwrap().accepts(&info(1)));
+        assert!(!opts.process_filter.as_ref().unwrap().accepts(&info(2)));
+        let entry = FdEntry {
+            fd: 3,
+            kind: FdKind::File,
+            target: "/tmp".to_string(),
+            anon_subtype: None,
+            deleted: false,
+            size: None,
+            pos: None,
+            flags: None,
+            inode: None,
+            mode: None,
+            sock: None,
+        };
+        assert!((opts.fd_filter.as_ref().unwrap())(&entry));
+    }
+
+    #[test]
+    fn default_process_filter_accepts_every_pid() {
+        struct All;
+        impl ProcessFilter for All {
+            fn accepts(&self, _info: &ProcessInfo) -> bool {
+                true
+            }
+        }
+        let f = All;
+        assert!(f.accepts_pid(1));
+        assert!(f.accepts_pid(999_999));
+        assert!(f.accepts(&info(5)));
+    }
+
+    #[test]
+    fn sock_addr_display() {
+        let inet = SockAddr::Inet {
+            addr: "10.0.0.1".parse().unwrap(),
+            port: 8080,
+        };
+        assert_eq!(inet.to_string(), "10.0.0.1:8080");
+        let v6 = SockAddr::Inet {
+            addr: "::1".parse().unwrap(),
+            port: 443,
+        };
+        assert_eq!(v6.to_string(), "::1:443");
+        assert_eq!(
+            SockAddr::Unix("/run/x.sock".to_string()).to_string(),
+            "/run/x.sock"
+        );
+    }
+
+    #[test]
+    fn sock_proto_tags() {
+        assert_eq!(SockProto::Tcp.tag(), "TCP");
+        assert_eq!(SockProto::Udp.tag(), "UDP");
+        assert_eq!(SockProto::Unix.tag(), "UNIX");
+    }
+}

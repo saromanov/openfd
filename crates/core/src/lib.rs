@@ -32,3 +32,34 @@ pub fn default_backend() -> Box<dyn Backend> {
 pub fn scan(opts: &ScanOptions, sink: &FdSink<'_>) -> std::io::Result<()> {
     default_backend().scan(opts, sink)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn scan_wrapper_streams_into_the_sink() {
+        let seen = AtomicUsize::new(0);
+        let sink = |_info: &Arc<ProcessInfo>, _entry: &FdEntry| {
+            seen.fetch_add(1, Ordering::Relaxed);
+        };
+        let opts = ScanOptions::new()
+            .no_sockets()
+            .parallel_min_pids(usize::MAX);
+        scan(&opts, &sink).expect("scan must succeed");
+        assert!(seen.into_inner() > 0, "our own fds are always visible");
+    }
+
+    #[test]
+    fn scan_wrapper_honours_the_fd_filter() {
+        let sink = |_info: &Arc<ProcessInfo>, _entry: &FdEntry| {
+            panic!("no entry may pass the rejecting filter");
+        };
+        let opts = ScanOptions::new()
+            .no_sockets()
+            .fd_filter(Arc::new(|_e: &FdEntry| false));
+        scan(&opts, &sink).expect("scan must succeed");
+    }
+}

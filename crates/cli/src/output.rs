@@ -1,6 +1,7 @@
 //! Output formats for the openfd CLI: table, terse, NDJSON, CSV, summary.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::io::{self, Write};
 
 use serde::Serialize;
@@ -206,16 +207,19 @@ impl Printer {
         colors: Colors,
         stdout: Box<dyn io::Write + Send>,
     ) -> Self {
-        let csv = match format {
+        let (csv, line_out) = match format {
             Format::Csv => {
                 let mut w = csv::Writer::from_writer(stdout);
                 let _ = w.write_record([
                     "COMMAND", "PID", "USER", "FD", "TYPE", "SIZE", "POS", "FLAGS", "DELETED",
                     "TARGET",
                 ]);
-                Some(w)
+                (Some(w), None)
             }
-            _ => None,
+            _ => (
+                None,
+                Some(std::io::BufWriter::with_capacity(256 * 1024, stdout)),
+            ),
         };
         Printer {
             format,
@@ -225,10 +229,7 @@ impl Printer {
             colors,
             state: std::sync::Mutex::new(PrinterState {
                 csv,
-                line_out: Some(std::io::BufWriter::with_capacity(
-                    256 * 1024,
-                    Box::new(io::stdout()) as Box<dyn io::Write + Send>,
-                )),
+                line_out,
                 pids: BTreeSet::new(),
                 summary: BTreeMap::new(),
                 tree: BTreeMap::new(),
@@ -388,50 +389,51 @@ impl Printer {
 
     pub fn finish(&self) {
         let mut st = self.state.lock().unwrap();
-        if let Some(out) = st.line_out.as_mut() {
-            let _ = out.flush();
-        }
-        if self.tree_mode {
-            self.print_tree(&st);
-            return;
-        }
-        if self.summary_mode {
-            self.print_summary(&mut st);
-            return;
-        }
-        match self.format {
-            Format::Terse => {
-                let pids: Vec<u32> = st.pids.iter().copied().collect();
-                if let Some(out) = st.line_out.as_mut() {
-                    for pid in &pids {
-                        let _ = writeln!(out, "{pid}");
+        if self.tree_mode || self.summary_mode {
+            let text = if self.tree_mode {
+                self.tree_text(&st)
+            } else {
+                self.summary_text(&st)
+            };
+            if let Some(out) = st.line_out.as_mut() {
+                let _ = out.write_all(text.as_bytes());
+            }
+        } else {
+            match self.format {
+                Format::Terse => {
+                    let pids: Vec<u32> = st.pids.iter().copied().collect();
+                    if let Some(out) = st.line_out.as_mut() {
+                        for pid in &pids {
+                            let _ = writeln!(out, "{pid}");
+                        }
                     }
                 }
-            }
-            Format::Csv => {
-                if let Some(w) = st.csv.as_mut() {
-                    let _ = w.flush();
+                Format::Csv => {
+                    if let Some(w) = st.csv.as_mut() {
+                        let _ = w.flush();
+                    }
                 }
-            }
-            Format::Table => {
-                if st.deleted_total.0 > 0 {
-                    let mut out = io::stderr().lock();
-                    let (count, bytes) = st.deleted_total;
-                    let _ = writeln!(
-                        out,
-                        "openfd: {count} deleted file(s) hold {bytes} reclaimable bytes"
-                    );
+                Format::Table => {
+                    if st.deleted_total.0 > 0 {
+                        let mut out = io::stderr().lock();
+                        let (count, bytes) = st.deleted_total;
+                        let _ = writeln!(
+                            out,
+                            "openfd: {count} deleted file(s) hold {bytes} reclaimable bytes"
+                        );
+                    }
                 }
+                Format::Json => {}
             }
-            Format::Json => {}
         }
         if let Some(out) = st.line_out.as_mut() {
             let _ = out.flush();
         }
     }
 
-    fn print_summary(&self, st: &mut PrinterState) {
-        let mut out = io::stdout().lock();
+    /// Summary report as text; written to the output at the end of the scan.
+    fn summary_text(&self, st: &PrinterState) -> String {
+        let mut out = String::new();
         let _ = writeln!(
             out,
             "{:<7} {:<12} {:<19} {:>6} {:>9} {:>12}",
@@ -473,13 +475,14 @@ impl Printer {
                 .join(", ");
             let _ = writeln!(out, "TOP FILES: {parts}");
         }
+        out
     }
 
     /// Render buffered rows as a process tree: parents above children,
     /// fd rows indented under their process. Orphans (parent not visible)
     /// and pid 1 sit at the top level; cycles are broken defensively.
-    fn print_tree(&self, st: &PrinterState) {
-        let mut out = io::stdout().lock();
+    fn tree_text(&self, st: &PrinterState) -> String {
+        let mut out = String::new();
         let mut children: std::collections::HashMap<u32, Vec<u32>> =
             std::collections::HashMap::new();
         for (pid, proc) in &st.tree {
@@ -493,20 +496,21 @@ impl Printer {
         let mut roots = children.get(&0).cloned().unwrap_or_default();
         roots.sort_unstable();
         for pid in roots {
-            self.print_tree_node(&mut out, st, pid, &children, &mut visited, 0);
+            self.tree_node(&mut out, st, pid, &children, &mut visited, 0);
         }
         // Defensive: any process not reachable from the roots (a cycle among
         // parents) is printed at the top level too.
         for &pid in st.tree.keys() {
             if !visited.contains(&pid) {
-                self.print_tree_node(&mut out, st, pid, &children, &mut visited, 0);
+                self.tree_node(&mut out, st, pid, &children, &mut visited, 0);
             }
         }
+        out
     }
 
-    fn print_tree_node(
+    fn tree_node(
         &self,
-        out: &mut impl io::Write,
+        out: &mut String,
         st: &PrinterState,
         pid: u32,
         children: &std::collections::HashMap<u32, Vec<u32>>,
@@ -535,8 +539,451 @@ impl Printer {
         }
         if let Some(kids) = children.get(&pid) {
             for &kid in kids {
-                self.print_tree_node(out, st, kid, children, visited, depth + 1);
+                self.tree_node(out, st, kid, children, visited, depth + 1);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openfd_core::{FdKind, ProcessInfo};
+    use std::sync::{Arc, Mutex};
+
+    /// Test sink: the printer owns a `Box<dyn Write>`, which cannot be read
+    /// back, so hand it a shared buffer instead of stdout.
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuf {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn printer(
+        format: Format,
+        summary_mode: bool,
+        tree_mode: bool,
+        sizes: bool,
+        enabled: bool,
+    ) -> (Printer, SharedBuf) {
+        let buf = SharedBuf::default();
+        let p = Printer::new(
+            format,
+            summary_mode,
+            tree_mode,
+            sizes,
+            Colors::new(enabled),
+            Box::new(buf.clone()),
+        );
+        (p, buf)
+    }
+
+    fn info(pid: u32, username: Option<&str>) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid: None,
+            comm: "demo".to_string(),
+            cmdline0: None,
+            uid: 1000,
+            username: username.map(str::to_string),
+        }
+    }
+
+    fn entry(fd: i32, kind: FdKind, target: &str) -> FdEntry {
+        FdEntry {
+            fd,
+            kind,
+            target: target.to_string(),
+            anon_subtype: None,
+            deleted: false,
+            size: None,
+            pos: None,
+            flags: None,
+            inode: None,
+            mode: None,
+            sock: None,
+        }
+    }
+
+    fn sock(
+        proto: SockProto,
+        family: AddrFamily,
+        local: SockAddr,
+        remote: Option<SockAddr>,
+        state: Option<&'static str>,
+    ) -> SockInfo {
+        SockInfo {
+            proto,
+            family,
+            local,
+            remote,
+            state,
+        }
+    }
+
+    fn inet(addr: &str, port: u16) -> SockAddr {
+        SockAddr::Inet {
+            addr: addr.parse().unwrap(),
+            port,
+        }
+    }
+
+    #[test]
+    fn table_rows_show_kind_target_and_sizes() {
+        let (p, buf) = printer(Format::Table, false, false, true, false);
+        let i = info(7, Some("alice"));
+        let mut file = entry(3, FdKind::File, "/var/log/syslog");
+        file.size = Some(4096);
+        p.write_row(&i, &file);
+
+        let mut gone = entry(4, FdKind::File, "/tmp/gone");
+        gone.deleted = true;
+        gone.size = Some(512);
+        p.write_row(&i, &gone);
+        p.finish();
+
+        let text = buf.text();
+        assert!(text.contains("alice"), "table shows the username: {text}");
+        assert!(
+            text.contains("4096"),
+            "table shows the size with --sizes: {text}"
+        );
+        assert!(text.contains("/var/log/syslog"), "{text}");
+        assert!(
+            text.contains("/tmp/gone (deleted)"),
+            "deleted files are tagged: {text}"
+        );
+        assert!(text.contains("file"), "kind tag is printed: {text}");
+    }
+
+    #[test]
+    fn table_without_sizes_has_no_size_column() {
+        let (p, buf) = printer(Format::Table, false, false, false, false);
+        p.write_row(&info(1, None), &entry(0, FdKind::Pipe, "pipe:[42]"));
+        p.finish();
+        let text = buf.text();
+        assert!(text.contains("pipe:[42]"), "{text}");
+        assert!(
+            text.contains("1000"),
+            "uid shown when the name is unknown: {text}"
+        );
+        assert!(text.contains("pipe"), "kind tag: {text}");
+    }
+
+    #[test]
+    fn table_colors_deleted_and_socket_kinds() {
+        let (p, buf) = printer(Format::Table, false, false, false, true);
+        let mut gone = entry(3, FdKind::File, "/tmp/x");
+        gone.deleted = true;
+        p.write_row(&info(1, Some("bob")), &gone);
+
+        for (proto, local) in [
+            (SockProto::Tcp, inet("127.0.0.1", 80)),
+            (SockProto::Udp, inet("127.0.0.1", 53)),
+            (SockProto::Unix, SockAddr::Unix("/run/a.sock".to_string())),
+        ] {
+            let mut e = entry(4, FdKind::Socket, "socket:[7]");
+            let family = match proto {
+                SockProto::Unix => AddrFamily::Unix,
+                _ => AddrFamily::V4,
+            };
+            e.sock = Some(sock(proto, family, local, None, None));
+            p.write_row(&info(1, Some("bob")), &e);
+        }
+        p.finish();
+
+        let text = buf.text();
+        assert!(text.contains("\x1b[31m/tmp/x (deleted)\x1b[0m"), "{text}");
+        assert!(text.contains("\x1b[36mTCP"), "tcp is cyan: {text}");
+        assert!(text.contains("\x1b[35mUDP"), "udp is magenta: {text}");
+        assert!(text.contains("\x1b[33mUNIX"), "unix is yellow: {text}");
+        assert!(text.contains("127.0.0.1:80"), "{text}");
+        assert!(text.contains("/run/a.sock"), "{text}");
+    }
+
+    #[test]
+    fn sock_target_string_covers_all_endpoint_shapes() {
+        let local = inet("10.0.0.1", 1234);
+        let remote = inet("10.0.0.2", 443);
+
+        let both = sock(
+            SockProto::Tcp,
+            AddrFamily::V4,
+            local.clone(),
+            Some(remote.clone()),
+            Some("ESTABLISHED"),
+        );
+        assert_eq!(
+            sock_target_string(&both),
+            "10.0.0.1:1234->10.0.0.2:443 (ESTABLISHED)"
+        );
+
+        let remote_only_state = sock(
+            SockProto::Tcp,
+            AddrFamily::V4,
+            local.clone(),
+            Some(remote),
+            None,
+        );
+        assert_eq!(
+            sock_target_string(&remote_only_state),
+            "10.0.0.1:1234->10.0.0.2:443"
+        );
+
+        let local_only = sock(
+            SockProto::Tcp,
+            AddrFamily::V4,
+            local.clone(),
+            None,
+            Some("LISTEN"),
+        );
+        assert_eq!(sock_target_string(&local_only), "10.0.0.1:1234 (LISTEN)");
+
+        let bare = sock(SockProto::Udp, AddrFamily::V4, local, None, None);
+        assert_eq!(sock_target_string(&bare), "10.0.0.1:1234");
+    }
+
+    #[test]
+    fn json_rows_carry_optional_fields() {
+        let (p, buf) = printer(Format::Json, false, false, false, false);
+        let i = info(7, Some("alice"));
+
+        let mut full = entry(3, FdKind::File, "/data/x.bin");
+        full.size = Some(10);
+        full.pos = Some(20);
+        full.flags = Some(0o1_000_002);
+        full.inode = Some(33);
+        p.write_row(&i, &full);
+
+        let ipv6 = sock(
+            SockProto::Tcp,
+            AddrFamily::V6,
+            inet("::1", 8080),
+            Some(inet("::2", 443)),
+            Some("ESTABLISHED"),
+        );
+        let mut sock_entry = entry(4, FdKind::Socket, "socket:[9]");
+        sock_entry.sock = Some(ipv6);
+        p.write_row(&i, &sock_entry);
+
+        let unix = sock(
+            SockProto::Unix,
+            AddrFamily::Unix,
+            SockAddr::Unix("@anon".to_string()),
+            None,
+            None,
+        );
+        let mut unix_entry = entry(5, FdKind::Socket, "socket:[10]");
+        unix_entry.anon_subtype = Some("eventfd".to_string());
+        unix_entry.sock = Some(unix);
+        p.write_row(&i, &unix_entry);
+        p.finish();
+
+        let lines: Vec<serde_json::Value> = buf
+            .text()
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each line is JSON"))
+            .collect();
+        assert_eq!(lines.len(), 3);
+
+        assert_eq!(lines[0]["kind"], "file");
+        assert_eq!(lines[0]["size"], 10);
+        assert_eq!(lines[0]["pos"], 20);
+        assert_eq!(lines[0]["flags"], "0o1000002");
+        assert_eq!(lines[0]["inode"], 33);
+        assert!(lines[0].get("sock").is_none(), "no socket object for files");
+
+        assert_eq!(lines[1]["sock"]["family"], "ipv6");
+        assert_eq!(lines[1]["sock"]["proto"], "TCP");
+        assert_eq!(lines[1]["sock"]["local"], "::1:8080");
+        assert_eq!(lines[1]["sock"]["state"], "ESTABLISHED");
+
+        assert_eq!(lines[2]["anon_subtype"], "eventfd");
+        assert_eq!(lines[2]["sock"]["family"], "unix");
+        assert_eq!(lines[2]["sock"]["local"], "@anon");
+        assert!(
+            lines[2]["sock"].get("remote").is_none(),
+            "absent remote is skipped"
+        );
+        assert!(lines[2]["sock"].get("state").is_none());
+    }
+
+    #[test]
+    fn json_ipv4_socket_family() {
+        let (p, buf) = printer(Format::Json, false, false, false, false);
+        let mut e = entry(3, FdKind::Socket, "socket:[1]");
+        e.sock = Some(sock(
+            SockProto::Udp,
+            AddrFamily::V4,
+            inet("127.0.0.1", 53),
+            None,
+            Some("UNCONN"),
+        ));
+        p.write_row(&info(1, Some("u")), &e);
+        p.finish();
+
+        let v: serde_json::Value = serde_json::from_str(buf.text().trim()).unwrap();
+        assert_eq!(v["sock"]["family"], "ipv4");
+        assert_eq!(v["sock"]["proto"], "UDP");
+        assert_eq!(v["sock"]["state"], "UNCONN");
+    }
+
+    #[test]
+    fn csv_header_and_row() {
+        let (p, buf) = printer(Format::Csv, false, false, false, false);
+        let mut e = entry(3, FdKind::File, "/tmp/csv");
+        e.size = Some(7);
+        e.pos = Some(1);
+        e.flags = Some(0o1_000_000);
+        e.deleted = true;
+        p.write_row(&info(42, None), &e);
+        p.finish();
+
+        let text = buf.text();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            "COMMAND,PID,USER,FD,TYPE,SIZE,POS,FLAGS,DELETED,TARGET"
+        );
+        let row = lines.next().unwrap();
+        // CSV keeps the padded TYPE column of the table format.
+        assert_eq!(
+            row.trim_end(),
+            "demo,42,1000,3,file      ,7,1,0o1000000,true,/tmp/csv (deleted)".trim_end()
+        );
+    }
+
+    #[test]
+    fn terse_prints_each_pid_once() {
+        let (p, buf) = printer(Format::Terse, false, false, false, false);
+        let a = info(11, Some("a"));
+        let b = info(22, None);
+        let e = entry(3, FdKind::File, "/tmp/x");
+        p.write_row(&a, &e);
+        p.write_row(&a, &e); // same pid: suppressed by the thread-local cache
+        p.write_row(&b, &e);
+        p.write_row(&a, &e); // different pid since: printed again, deduped by the set
+        p.finish();
+
+        assert_eq!(buf.text(), "11\n22\n");
+    }
+
+    #[test]
+    fn summary_reports_counts_kinds_and_shared_files() {
+        let (p, buf) = printer(Format::Table, true, false, false, false);
+        let i = info(5, Some("carol"));
+
+        let mut deleted = entry(3, FdKind::File, "/tmp/old");
+        deleted.deleted = true;
+        deleted.size = Some(100);
+        p.write_row(&i, &deleted);
+        p.write_row(&i, &entry(4, FdKind::File, "/tmp/shared"));
+        p.write_row(&i, &entry(5, FdKind::File, "/tmp/shared"));
+        p.write_row(&i, &entry(6, FdKind::Pipe, "pipe:[1]"));
+        p.finish();
+
+        let text = buf.text();
+        assert!(text.contains("DEL_BYTES"), "header: {text}");
+        assert!(
+            text.lines()
+                .any(|l| l.contains("carol") && l.contains(" 4 ") && l.contains("100")),
+            "summary line with fds/deleted bytes: {text}"
+        );
+        assert!(text.contains("KIND TOTALS:"), "{text}");
+        assert!(
+            text.contains("2x /tmp/shared"),
+            "files shared by two fds are listed: {text}"
+        );
+        assert!(text.contains("file="), "kind totals: {text}");
+        assert!(text.contains("pipe="), "{text}");
+    }
+
+    #[test]
+    fn summary_without_kinds_or_shared_files_is_short() {
+        let (p, buf) = printer(Format::Table, true, false, false, false);
+        p.finish();
+        let text = buf.text();
+        assert!(text.contains("DEL_BYTES"), "{text}");
+        assert!(!text.contains("KIND TOTALS:"), "{text}");
+        assert!(!text.contains("TOP FILES:"), "{text}");
+    }
+
+    #[test]
+    fn tree_nests_children_orphans_and_cycles() {
+        let (p, buf) = printer(Format::Table, false, true, false, false);
+
+        let mut root = info(1, Some("root"));
+        root.comm = "init".to_string();
+        p.write_row(&root, &entry(3, FdKind::File, "/sbin/init"));
+
+        let mut child = info(10, Some("root"));
+        child.comm = "child".to_string();
+        child.ppid = Some(1);
+        p.write_row(&child, &entry(4, FdKind::File, "/tmp/child"));
+
+        let mut grandchild = info(11, Some("root"));
+        grandchild.comm = "grand".to_string();
+        grandchild.ppid = Some(10);
+        p.write_row(&grandchild, &entry(5, FdKind::Pipe, "pipe:[2]"));
+
+        // Orphan: parent is not in the tree.
+        let mut orphan = info(20, Some("root"));
+        orphan.comm = "orphan".to_string();
+        orphan.ppid = Some(999);
+        p.write_row(&orphan, &entry(6, FdKind::File, "/tmp/orphan"));
+
+        // Cycle: each pid claims the other as parent, plus a self-parent.
+        let mut cyc_a = info(30, Some("root"));
+        cyc_a.comm = "cyc-a".to_string();
+        cyc_a.ppid = Some(31);
+        p.write_row(&cyc_a, &entry(7, FdKind::File, "/tmp/a"));
+
+        let mut cyc_b = info(31, Some("root"));
+        cyc_b.comm = "cyc-b".to_string();
+        cyc_b.ppid = Some(30);
+        p.write_row(&cyc_b, &entry(8, FdKind::File, "/tmp/b"));
+
+        let mut self_parent = info(40, Some("root"));
+        self_parent.comm = "selfy".to_string();
+        self_parent.ppid = Some(40);
+        p.write_row(&self_parent, &entry(9, FdKind::File, "/tmp/self"));
+        p.finish();
+
+        let text = buf.text();
+        let line_of = |needle: &str| {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} missing in: {text}"))
+                .to_string()
+        };
+        assert!(line_of("init").starts_with("init"), "roots are flush left");
+        assert!(
+            line_of("child").starts_with("  child"),
+            "children are indented once: {text}"
+        );
+        assert!(
+            line_of("grand").starts_with("    grand"),
+            "grandchildren are indented twice: {text}"
+        );
+        assert!(line_of("orphan").starts_with("orphan"));
+        assert!(line_of("selfy").starts_with("selfy"));
+        // Both cycle members are printed exactly once (header line only).
+        assert_eq!(text.matches("cyc-a").count(), 1);
+        assert_eq!(text.matches("cyc-b").count(), 1);
+        assert!(text.contains("pipe:[2]"), "fd rows under a process: {text}");
     }
 }

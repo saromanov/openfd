@@ -353,3 +353,66 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+
+    fn no_entries_scan(opts: &ScanOptions) -> usize {
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        let sink = |_info: &std::sync::Arc<ProcessInfo>, _entry: &FdEntry| {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        };
+        ProcBackend::new()
+            .scan(opts, &sink)
+            .expect("scan must work");
+        count.into_inner()
+    }
+
+    #[test]
+    fn backend_default_and_name() {
+        let d: ProcBackend = Default::default();
+        assert_eq!(d.name(), "proc");
+        assert_eq!(ProcBackend::new().name(), "proc");
+        assert_eq!(crate::default_backend().name(), "proc");
+    }
+
+    #[test]
+    fn sequential_path_runs_when_the_worker_floor_is_high() {
+        // A huge parallel_min_pids forces the sequential loop, which is the
+        // fallback for tiny process sets.
+        let opts = ScanOptions::new()
+            .no_sockets()
+            .no_fdinfo()
+            .parallel_min_pids(usize::MAX);
+        let n = no_entries_scan(&opts);
+        assert!(n > 0, "our own fds must be streamed");
+    }
+
+    #[test]
+    fn rejecting_fd_filter_suppresses_every_entry() {
+        let opts = ScanOptions::new()
+            .no_sockets()
+            .fd_filter(std::sync::Arc::new(|_e: &FdEntry| false));
+        assert_eq!(no_entries_scan(&opts), 0);
+    }
+
+    #[test]
+    fn fdinfo_of_a_missing_fd_is_empty() {
+        let (pos, flags, ino) = read_fdinfo(std::process::id(), 999_999);
+        assert_eq!((pos, flags, ino), (None, None, None));
+    }
+
+    #[test]
+    fn read_process_reports_own_identity() {
+        let info = read_process(std::process::id(), None).expect("/proc/self must be readable");
+        assert_eq!(info.pid, std::process::id());
+        assert!(info.username.is_none(), "no user table passed");
+        assert!(!info.comm.is_empty());
+    }
+
+    #[test]
+    fn read_status_fields_of_a_missing_pid_is_none() {
+        assert!(read_status_fields(Path::new("/proc/self-no-such-pid")).is_none());
+    }
+}

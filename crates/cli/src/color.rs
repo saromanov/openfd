@@ -107,4 +107,31 @@ mod tests {
         let c = Colors::new(true);
         assert_eq!(c.tcp("TCP"), "\x1b[36mTCP\x1b[0m");
     }
+
+    #[test]
+    fn every_color_helper_wraps() {
+        let c = Colors::new(true);
+        assert_eq!(c.udp("UDP"), "\x1b[35mUDP\x1b[0m");
+        assert_eq!(c.unix("UNIX"), "\x1b[33mUNIX\x1b[0m");
+        assert_eq!(c.deleted("x"), "\x1b[31mx\x1b[0m");
+        assert_eq!(c.opened("+"), "\x1b[32m+\x1b[0m");
+        assert_eq!(c.closed("-"), "\x1b[31m-\x1b[0m");
+    }
+
+    #[test]
+    fn every_color_helper_is_identity_when_disabled() {
+        let c = Colors::new(false);
+        assert_eq!(c.udp("UDP"), "UDP");
+        assert_eq!(c.unix("UNIX"), "UNIX");
+        assert_eq!(c.opened("+"), "+");
+        assert_eq!(c.closed("-"), "-");
+    }
+
+    #[test]
+    fn effective_mode_is_true_for_always_and_false_for_never() {
+        // "auto" depends on the test harness stdout, so only the explicit
+        // modes are asserted here.
+        assert!(ColorMode::Always.effective());
+        assert!(!ColorMode::Never.effective());
+    }
 }

@@ -128,3 +128,35 @@ impl Args {
 pub fn cli_command() -> clap::Command {
     <Args as clap::Args>::augment_args(clap::Command::new("openfd"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Args {
+        Args::try_parse_from(args).expect("args must parse")
+    }
+
+    #[test]
+    fn format_picks_the_machine_mode() {
+        assert_eq!(parse(&["openfd"]).format(), Format::Table);
+        assert_eq!(parse(&["openfd", "--json"]).format(), Format::Json);
+        assert_eq!(parse(&["openfd", "--csv"]).format(), Format::Csv);
+        assert_eq!(parse(&["openfd", "-t"]).format(), Format::Terse);
+        // -j wins over the other format switches.
+        assert_eq!(
+            parse(&["openfd", "--csv", "-t", "-j"]).format(),
+            Format::Json
+        );
+    }
+
+    #[test]
+    fn defaults_match_the_documented_cli() {
+        let a = parse(&["openfd"]);
+        assert_eq!(a.color, "auto");
+        assert_eq!(a.interval, 1.0);
+        assert!(a.completions.is_none());
+        assert!(!a.tree);
+    }
+}

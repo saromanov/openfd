@@ -586,3 +586,179 @@ mod scope_tests {
         assert!(!table.unix.is_empty(), "unix table must be dumped");
     }
 }
+
+#[cfg(test)]
+mod parsing_tests {
+    use super::*;
+
+    #[test]
+    fn iter_nlmsgs_stops_on_done() {
+        let mut buf = nlmsg(SOCK_DIAG_BY_FAMILY, 0, &[1, 2, 3, 4]);
+        buf.extend_from_slice(&nlmsg(NLMSG_DONE, 0, &[0, 0, 0, 0]));
+        let (msgs, done) = iter_nlmsgs(&buf);
+        assert_eq!(msgs.len(), 1, "the socket message before DONE is kept");
+        assert!(done);
+    }
+
+    #[test]
+    fn iter_nlmsgs_stops_on_kernel_error() {
+        let mut err = (-1i32).to_ne_bytes().to_vec();
+        err.resize(4, 0);
+        let buf = nlmsg(NLMSG_ERROR, 0, &err);
+        let (msgs, done) = iter_nlmsgs(&buf);
+        assert!(msgs.is_empty());
+        assert!(done, "a non-zero error payload ends the dump");
+    }
+
+    #[test]
+    fn iter_nlmsgs_skips_ack_and_unknown_types() {
+        let mut buf = nlmsg(NLMSG_ERROR, 0, &[0, 0, 0, 0]); // ack: err == 0
+        buf.extend_from_slice(&nlmsg(0x99, 0, &[0, 0, 0, 0])); // unknown type
+        buf.extend_from_slice(&nlmsg(SOCK_DIAG_BY_FAMILY, 0, &[9]));
+        let (msgs, done) = iter_nlmsgs(&buf);
+        assert!(!done);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].payload, &[9]);
+    }
+
+    #[test]
+    fn iter_nlmsgs_breaks_on_bad_lengths() {
+        // len < 16
+        let mut short = 4u32.to_ne_bytes().to_vec();
+        short.extend_from_slice(&[0u8; 12]);
+        assert!(iter_nlmsgs(&short).0.is_empty());
+
+        // len larger than the buffer
+        let mut over = 4096u32.to_ne_bytes().to_vec();
+        over.extend_from_slice(&SOCK_DIAG_BY_FAMILY.to_ne_bytes());
+        over.extend_from_slice(&[0u8; 12]);
+        let (msgs, done) = iter_nlmsgs(&over);
+        assert!(msgs.is_empty() && !done);
+
+        // trailing bytes shorter than a header are ignored
+        let mut tail = nlmsg(SOCK_DIAG_BY_FAMILY, 0, &[7]);
+        tail.extend_from_slice(&[0u8; 8]);
+        assert_eq!(iter_nlmsgs(&tail).0.len(), 1);
+    }
+
+    #[test]
+    fn sock_table_len_get_and_is_empty() {
+        let mut t = SockTable::default();
+        assert!(t.is_empty());
+        let info = |proto| SockInfo {
+            proto,
+            family: AddrFamily::V4,
+            local: SockAddr::Inet {
+                addr: "127.0.0.1".parse().unwrap(),
+                port: 1,
+            },
+            remote: None,
+            state: None,
+        };
+        t.tcp.insert(10, info(SockProto::Tcp));
+        t.udp.insert(20, info(SockProto::Udp));
+        t.unix.insert(30, info(SockProto::Unix));
+        assert_eq!(t.len(), 3);
+        assert!(!t.is_empty());
+        assert_eq!(t.get(10).unwrap().proto, SockProto::Tcp);
+        assert_eq!(t.get(20).unwrap().proto, SockProto::Udp);
+        assert_eq!(t.get(30).unwrap().proto, SockProto::Unix);
+        assert!(t.get(40).is_none());
+    }
+
+    #[test]
+    fn parse_inet_addr_families() {
+        let v4 = [127, 0, 0, 1];
+        assert_eq!(
+            parse_inet_addr(&v4, AF_INET),
+            Some("127.0.0.1".parse().unwrap())
+        );
+        let mut v6 = [0u8; 16];
+        v6[15] = 1;
+        assert_eq!(parse_inet_addr(&v6, AF_INET6), Some("::1".parse().unwrap()));
+        // v4-mapped addresses render as plain v4
+        let mut mapped = [0u8; 16];
+        mapped[10] = 0xff;
+        mapped[11] = 0xff;
+        mapped[12..].copy_from_slice(&v4);
+        assert_eq!(
+            parse_inet_addr(&mapped, AF_INET6),
+            Some("127.0.0.1".parse().unwrap())
+        );
+        assert!(
+            parse_inet_addr(&v4, AF_UNIX).is_none(),
+            "not an inet family"
+        );
+    }
+
+    #[test]
+    fn parse_unix_diag_rejects_truncated_payload() {
+        assert!(parse_unix_diag(&[0u8; 8]).is_none());
+    }
+
+    #[test]
+    fn parse_unix_diag_breaks_on_bad_attribute() {
+        let mut payload = vec![AF_UNIX, 1, TCP_ESTABLISHED, 0];
+        payload.extend_from_slice(&7u32.to_ne_bytes());
+        payload.extend_from_slice(&0u32.to_ne_bytes());
+        payload.extend_from_slice(&0u32.to_ne_bytes());
+        // alen < 4: malformed attribute, parsing stops without a name
+        payload.extend_from_slice(&2u16.to_ne_bytes());
+        payload.extend_from_slice(&UNIX_DIAG_NAME.to_ne_bytes());
+        let (ino, name) = parse_unix_diag(&payload).unwrap();
+        assert_eq!(ino, 7);
+        assert!(name.is_none(), "no NAME attribute was readable");
+    }
+
+    #[test]
+    fn parse_unix_diag_padded_name_is_trimmed() {
+        let mut payload = vec![AF_UNIX, 1, TCP_ESTABLISHED, 0];
+        payload.extend_from_slice(&9u32.to_ne_bytes());
+        payload.extend_from_slice(&0u32.to_ne_bytes());
+        payload.extend_from_slice(&0u32.to_ne_bytes());
+        let name = b"/run/padded.sock\0\0";
+        let mut attr = ((4 + name.len()) as u16).to_ne_bytes().to_vec();
+        // NLA_F_NESTED bit must be masked off before the type comparison.
+        attr.extend_from_slice(&(UNIX_DIAG_NAME | 0x8000).to_ne_bytes());
+        attr.extend_from_slice(name);
+        payload.extend_from_slice(&attr);
+        let (_, parsed) = parse_unix_diag(&payload).unwrap();
+        assert_eq!(parsed.as_deref(), Some("/run/padded.sock"));
+    }
+
+    #[test]
+    fn empty_scope_dumps_nothing() {
+        let table = dump_scope(SockScope::none()).expect("empty scope cannot fail");
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+    }
+
+    #[test]
+    fn align4_rounds_up() {
+        assert_eq!(align4(0), 0);
+        assert_eq!(align4(1), 4);
+        assert_eq!(align4(4), 4);
+        assert_eq!(align4(5), 8);
+    }
+
+    #[test]
+    fn sink_short_circuit_stops_a_live_dump_early() {
+        // A sink returning false ends the roundtrip after the first message.
+        // Uses the real netlink socket, so it needs a visible socket to dump.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _ = &listener;
+        let sock = open_diag_socket().expect("netlink socket");
+        let req = nlmsg(
+            SOCK_DIAG_BY_FAMILY,
+            NLM_F_REQUEST | NLM_F_DUMP,
+            &inet_diag_req_v2(AF_INET, IPPROTO_TCP),
+        );
+        let mut seen = 0;
+        roundtrip(&sock, req, |_payload| {
+            seen += 1;
+            false
+        })
+        .expect("roundtrip");
+        assert_eq!(seen, 1, "the sink is not called again after a false");
+    }
+}

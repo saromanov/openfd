@@ -46,3 +46,43 @@ impl UserTable {
         self.uid_to_name.get(&uid).map(String::as_str)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_the_system_passwd() {
+        let t = UserTable::load();
+        assert_eq!(t.name(0), Some("root"), "/etc/passwd must resolve uid 0");
+        assert!(t.name(u32::MAX - 1).is_none(), "unknown uid has no name");
+    }
+
+    #[test]
+    fn malformed_lines_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passwd");
+        std::fs::write(
+            &path,
+            "# comment line\n\nroot:x:0:0:root:/root:/bin/sh\n:bad:1:1::/:/bin/sh\nbaduid:x:notanumber:0::/:/bin/sh\nnopasswd:5\n",
+        )
+        .unwrap();
+
+        let t = UserTable::from_path(path.to_str().unwrap()).expect("readable file");
+        assert_eq!(t.name(0), Some("root"));
+        assert_eq!(t.name(1), None, "empty name is skipped");
+        assert_eq!(t.name(5), None, "line without a uid is skipped");
+    }
+
+    #[test]
+    fn missing_file_is_an_error() {
+        assert!(UserTable::from_path("/nonexistent/passwd-for-openfd-test").is_err());
+    }
+
+    #[test]
+    fn empty_table_resolves_nothing() {
+        let t = UserTable::default();
+        assert!(t.name(0).is_none());
+        assert_eq!(format!("{t:?}"), "UserTable { uid_to_name: {} }");
+    }
+}
