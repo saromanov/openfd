@@ -147,10 +147,7 @@ impl Filters {
                 return false;
             }
         }
-        if !self.commands.is_empty() && !self.commands.iter().any(|c| command_matches(c, info)) {
-            return false;
-        }
-        true
+        self.commands.is_empty() || self.commands.iter().any(|c| command_matches(c, info))
     }
 
     /// Fd-level part of the filter: fds, deleted, paths, dirs, inet. Safe to
