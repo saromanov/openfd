@@ -279,8 +279,8 @@ pub fn dump_scope(scope: SockScope) -> std::io::Result<SockTable> {
 }
 
 fn open_diag_socket() -> std::io::Result<netlink_sys::Socket> {
-    use netlink_sys::{Protocol, Socket, SocketAddr};
-    let mut sock = Socket::new(Protocol::SockDiag)?;
+    use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_SOCK_DIAG};
+    let mut sock = Socket::new(NETLINK_SOCK_DIAG)?;
     let _ = sock.bind_auto()?;
     sock.connect(&SocketAddr::new(0, 0))?;
     Ok(sock)
@@ -293,8 +293,11 @@ fn roundtrip(
 ) -> std::io::Result<()> {
     // NLM_F_* flags live in the nlmsghdr; sendmsg flags stay 0.
     sock.send(&request, 0)?;
-    let mut buf = vec![0u8; 256 * 1024];
+    // recv takes a `bytes::BufMut`, so the buffer must have spare capacity:
+    // a zeroed `vec![0; N]` has none and a zero-length recv would block.
+    let mut buf = Vec::with_capacity(256 * 1024);
     loop {
+        buf.clear();
         let n = sock.recv(&mut buf, 0)?;
         if n == 0 {
             return Ok(());
