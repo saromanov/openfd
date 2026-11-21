@@ -615,6 +615,8 @@ mod tests {
             flags: None,
             inode: None,
             mode: None,
+            dev: None,
+            mnt_id: None,
             sock: None,
         }
     }

@@ -13,11 +13,23 @@
 
 mod classify;
 
+pub mod hints;
+pub mod holders;
+pub mod locks;
+pub mod mounts;
+pub mod owner;
 pub mod passwd;
 pub mod scanner;
 pub mod sockdiag;
+pub mod target;
 pub mod types;
 
+pub use hints::{Hint, build_hints};
+pub use holders::{CollectOptions, Holder, HolderKind, HolderReport, collect};
+pub use locks::{LockKind, LockMode, LockRecord, parse_lock_line};
+pub use mounts::{MountEntry, parse_mountinfo};
+pub use owner::{Owner, OwnerKind, parse_cgroup};
+pub use target::{Target, TargetKind};
 pub use types::{
     AddrFamily, Backend, FdEntry, FdKind, FdSink, ProcessFilter, ProcessInfo, ScanOptions,
     SockAddr, SockInfo, SockProto, SockScope,

@@ -82,6 +82,26 @@ impl InetFilter {
         Ok(f)
     }
 
+    /// Protocol selected by the `-i` spec, if any.
+    pub fn proto(&self) -> Option<SockProto> {
+        self.proto
+    }
+
+    /// Port selected by the `-i` spec, if any.
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
+    /// Address selected by the `-i` spec, if any.
+    pub fn addr(&self) -> Option<IpAddr> {
+        self.addr
+    }
+
+    /// `-i unix`: the spec selects unix sockets, which have no port.
+    pub fn is_unix(&self) -> bool {
+        self.unix
+    }
+
     fn matches_sock(&self, sock: &SockInfo) -> bool {
         if self.unix {
             return sock.proto == SockProto::Unix;
@@ -336,6 +356,8 @@ mod tests {
             flags: None,
             inode: None,
             mode: None,
+            dev: None,
+            mnt_id: None,
             sock: None,
         }
     }
@@ -472,6 +494,8 @@ mod dir_tests {
             flags: None,
             inode: None,
             mode: None,
+            dev: None,
+            mnt_id: None,
             sock: None,
         }
     }
@@ -536,6 +560,8 @@ mod inet_tests {
             flags: None,
             inode: Some(1),
             mode: None,
+            dev: None,
+            mnt_id: None,
             sock: Some(SockInfo {
                 proto,
                 family: if proto == SockProto::Unix {
@@ -655,6 +681,8 @@ mod inet_tests {
             flags: None,
             inode: None,
             mode: None,
+            dev: None,
+            mnt_id: None,
             sock: None,
         };
         assert!(!f.matches(&info(), &plain));
@@ -682,6 +710,8 @@ mod inet_tests {
             flags: None,
             inode: None,
             mode: None,
+            dev: None,
+            mnt_id: None,
             sock: None,
         };
         assert!(f.matches(&info(), &entry));

@@ -107,6 +107,10 @@ openfd [OPTIONS]
       --csv               CSV output
       --color <WHEN>      auto (default) | always | never
       --completions <SHELL>  print completion script (bash/zsh/fish/powershell)
+
+Subcommands:
+  why <TARGET>            explain who holds a file, directory, mountpoint or
+                          port, and how to release it (read-only)
 ```
 
 Groups of the same kind are OR-composed (like lsof), different groups AND-composed:
@@ -123,7 +127,43 @@ openfd --wait --path app.lock  # exit when nothing holds app.lock anymore
 openfd --nice 19               # full scan without crowding out other work
 openfd -s                      # 10 000 lines become ~50 per-process rows
 openfd --tree -c nginx         # fds grouped under each nginx worker
+openfd why /mnt/data           # who keeps the mount busy, and what to restart
+openfd why :8080               # which unit/container owns the port
+openfd why /var                # deleted-but-open files holding disk space
 ```
+
+### `openfd why`: who holds it, and what to do
+
+`umount: target is busy`, `address already in use`, and "I deleted the log but
+the disk is still full" all stop at the pid. `why` answers the next question
+in one step:
+
+```console
+$ openfd why /mnt/data
+/mnt/data (ext4, /dev/sdb1) is busy: 3 processes, 4 references
+
+OWNER                 PID    COMMAND  HOW    TARGET
+nginx.service         812    nginx    fd 7   /mnt/data/logs/access.log
+user@1000/session-3   4410   bash     cwd    /mnt/data/project
+docker:3f2a9c         9921   app      mmap   /mnt/data/lib/libfoo.so
+
+fix:
+  systemctl restart nginx.service       # nginx holds the target
+  cd out of /mnt/data/project           # pid 4410 (bash, pts/3) has its cwd inside
+  docker restart 3f2a9c                 # container docker:3f2a9c holds the target
+```
+
+It reports every way a resource can be held (`fd`, `cwd`, `root`, `exe`,
+`mmap`, file `lock`, nested `submount`), resolves each pid to its systemd
+unit, user session, Docker/Podman/containerd container or Kubernetes pod via
+`/proc/<pid>/cgroup`, sums deleted-but-open bytes, and prints copy-pasteable
+hints with a reason. Hints are **never executed**. Mount targets match by
+`mnt_id`, so a dead NFS mount cannot block the scan in `D` state.
+
+`--json` streams one object per holder plus a summary; the schema is in
+[docs/json.md](docs/json.md). Exit codes match `fuser`/`grep`: `0` found,
+`1` nothing holds the target, `2` error. `-q` prints nothing and only sets
+the code.
 
 Long scans from cron or monitoring benefit from `--nice 19`: the scan keeps
 its wall-clock speed but yields the CPU whenever anything else wants it.
@@ -142,6 +182,7 @@ It competes on the questions you actually ask, answered instantly:
 | Parallel scan (multi-core) | yes | no | no |
 | `--watch` live diff (+/− per fd) | yes | no | no |
 | `--top` fd-leak detector | yes | no | no |
+| `why` (owner + hint for busy paths/ports) | yes | no | no |
 | `--wait` (block until released) | yes | no | no |
 | `--deleted` + reclaimable bytes | yes | lists, no byte total | no |
 | Per-process summary / process tree | yes | no | no |
@@ -163,15 +204,15 @@ scriptable machine format without shell glue.
 
 This MVP covers the common 20% of the lsof surface. **Not yet implemented**
 (and tracked on the roadmap): `+L`/`+M` style offsets-in-memory views, NFS/FS
-details, container awareness (cgroup v2 →
-container id), and macOS support (Linux-only for now). If a flag is missing,
+details and macOS support (Linux-only for now). If a flag is missing,
 `openfd` exits with an error — scripts should keep lsof until the flag they
 need lands.
 
 ## Architecture
 
 - [`openfd-core`](crates/core) — the library: `/proc` scanner, fd classification,
-  user lookup, and the `Backend` trait (platform abstraction, day-one separation
+  user lookup, mountinfo and cgroup parsers, holder collection and the hint
+  engine, plus the `Backend` trait (platform abstraction, day-one separation
   so a macOS libproc backend can land without CLI changes).
 - [`openfd`](crates/cli) — the binary: clap-based filters, streaming table /
   NDJSON / CSV printers, per-process summary with kind totals and top shared

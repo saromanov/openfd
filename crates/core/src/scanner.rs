@@ -199,9 +199,11 @@ fn emit_process_fds(
 
         let mut size = None;
         let mut mode = None;
+        let mut dev = None;
         if let Some(meta) = &stat_meta {
             size = Some(meta.len());
             mode = Some(meta.mode());
+            dev = Some(meta.dev());
         }
 
         let sock = match socks {
@@ -227,6 +229,8 @@ fn emit_process_fds(
                 flags: None,
                 inode: cls.inode,
                 mode,
+                dev,
+                mnt_id: None,
                 sock: sock.clone(),
             };
             if !f(&probe) {
@@ -234,10 +238,10 @@ fn emit_process_fds(
             }
         }
 
-        let (pos, flags, fdinfo_ino) = if opts.read_fdinfo {
+        let (pos, flags, fdinfo_ino, mnt_id) = if opts.read_fdinfo {
             read_fdinfo(pid, fd)
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
 
         let fd_entry = FdEntry {
@@ -251,18 +255,21 @@ fn emit_process_fds(
             flags,
             inode: cls.inode.or(fdinfo_ino),
             mode,
+            dev,
+            mnt_id,
             sock,
         };
         sink(info, &fd_entry);
     }
 }
 
-/// Read `pos`, `flags` and the file's `ino` (kernels >= 4.x) from
-/// `/proc/<pid>/fdinfo/<fd>` in a single pass.
-fn read_fdinfo(pid: u32, fd: i32) -> (Option<u64>, Option<u32>, Option<u64>) {
+/// Read `pos`, `flags`, the file's `ino` (kernels >= 4.x) and `mnt_id`
+/// (kernels >= 3.15) from `/proc/<pid>/fdinfo/<fd>` in a single pass.
+fn read_fdinfo(pid: u32, fd: i32) -> (Option<u64>, Option<u32>, Option<u64>, Option<u64>) {
     let mut pos = None;
     let mut flags = None;
     let mut ino = None;
+    let mut mnt_id = None;
     let path: PathBuf = ["/proc", &pid.to_string(), "fdinfo", &fd.to_string()]
         .iter()
         .collect();
@@ -275,11 +282,12 @@ fn read_fdinfo(pid: u32, fd: i32) -> (Option<u64>, Option<u32>, Option<u64>) {
                 "pos" => pos = value.parse().ok(),
                 "flags" => flags = u32::from_str_radix(value, 8).ok(),
                 "ino" => ino = value.parse().ok(),
+                "mnt_id" => mnt_id = value.parse().ok(),
                 _ => {}
             }
         }
     }
-    (pos, flags, ino)
+    (pos, flags, ino, mnt_id)
 }
 
 fn read_process(pid: u32, users: Option<&UserTable>) -> Option<ProcessInfo> {
@@ -342,11 +350,12 @@ mod tests {
     /// pass (this used to be two reads of the same file).
     #[test]
     fn fdinfo_single_pass_parses_pos_flags_ino() {
-        let (pos, flags, ino) = read_fdinfo(std::process::id(), 0);
+        let (pos, flags, ino, mnt_id) = read_fdinfo(std::process::id(), 0);
         assert!(
             flags.is_some(),
             "fdinfo must expose flags for our own stdin"
         );
+        assert!(mnt_id.is_some(), "fdinfo must expose mnt_id");
         assert!(
             pos.is_some() || ino.is_some(),
             "pos/ino should be present: {pos:?} {ino:?}"
@@ -399,8 +408,8 @@ mod backend_tests {
 
     #[test]
     fn fdinfo_of_a_missing_fd_is_empty() {
-        let (pos, flags, ino) = read_fdinfo(std::process::id(), 999_999);
-        assert_eq!((pos, flags, ino), (None, None, None));
+        let (pos, flags, ino, mnt_id) = read_fdinfo(std::process::id(), 999_999);
+        assert_eq!((pos, flags, ino, mnt_id), (None, None, None, None));
     }
 
     #[test]

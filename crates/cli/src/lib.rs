@@ -6,5 +6,6 @@ pub mod args;
 pub mod color;
 pub mod filters;
 pub mod output;
+pub mod why;
 
 pub use args::{Args, cli_command};
