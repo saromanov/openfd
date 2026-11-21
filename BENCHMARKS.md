@@ -31,7 +31,10 @@ system, same minute, sequential runs of each binary.
 `.github/workflows/bench.yml` runs the same container harness on every
 pull request with `LOAD=10000 MULTI_PROCS=10`: lsof, lsfd, ss and fuser
 come from the ubuntu:26.04 packages, openfd is the static musl build of
-the PR. Results are posted to the job summary and uploaded as the
+the PR. The latest openfd release (`openfd-x86_64-linux` from GitHub
+Releases) joins every scenario as the baseline, so the job shows both the
+speedup over the competitors and the change since the released version.
+Results are posted to the job summary and uploaded as the
 `bench-results` artifact. GitHub-hosted runners share CPU, so treat the
 numbers as a trend, not a gate: compare the openfd/lsof ratio between
 runs rather than absolute times.

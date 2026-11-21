@@ -32,16 +32,21 @@ def hyperfine_table(scenario, path):
     lines = [
         f"#### {scenario}",
         "",
-        "| command | mean, ms | ± σ | min | max | peak RSS, MiB |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| command | mean, ms | ± σ | min | max | peak RSS, MiB | vs PR build |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
+    cmds = []
     for run in data["results"]:
         wall, memory = wall_and_memory(run)
+        cmds.append((run["command"], wall, memory))
+    first_mean = cmds[0][1]["mean"]
+    for command, wall, memory in cmds:
         memory_mib = f"{memory['mean'] / 2**20:.1f}" if memory else "—"
+        ratio = f"{wall['mean'] / first_mean:.2f}x" if first_mean else "—"
         lines.append(
-            f"| `{run['command']}` | {millis(wall['mean'])} | "
+            f"| `{command}` | {millis(wall['mean'])} | "
             f"{millis(wall['stddev'])} | {millis(wall['min'])} | "
-            f"{millis(wall['max'])} | {memory_mib} |"
+            f"{millis(wall['max'])} | {memory_mib} | {ratio} |"
         )
     lines.append("")
     return lines

@@ -28,6 +28,14 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: hyperfine
+      - name: Fetch latest openfd release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release
+          gh release download --repo "$GITHUB_REPOSITORY" \
+            --pattern openfd-x86_64-linux --dir release
+          chmod +x release/openfd-x86_64-linux
       - name: Build (static)
         run: cargo build --release --locked -p openfd --target x86_64-unknown-linux-musl
       - name: Run benchmarks in ubuntu:26.04
@@ -41,6 +49,7 @@ jobs:
             -e MULTI_PROCS="$MULTI_PROCS" \
             -v "$PWD/bench:/bench" \
             -v "$PWD/target/x86_64-unknown-linux-musl/release/openfd:/openfd:ro" \
+            -v "$PWD/release/openfd-x86_64-linux:/openfd-release:ro" \
             -v "$(command -v hyperfine):/hyperfine:ro" \
             ubuntu:26.04 bash /bench/bench.sh
       - name: Job summary

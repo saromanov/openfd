@@ -27,6 +27,13 @@ fi
 HYPERFINE=$(command -v hyperfine)
 [ -n "$HYPERFINE" ] || { echo "hyperfine not on PATH: cargo install hyperfine" >&2; exit 1; }
 
+# Optional baseline: OPENFD_BASELINE=/path/to/released/openfd
+BASELINE=()
+if [ -n "${OPENFD_BASELINE:-}" ]; then
+    [ -x "$OPENFD_BASELINE" ] || { echo "OPENFD_BASELINE is not executable" >&2; exit 1; }
+    BASELINE=(-v "$OPENFD_BASELINE:/openfd-release:ro")
+fi
+
 mkdir -p bench/results
 rm -f bench/results/*.json bench/results/*.txt
 
@@ -36,5 +43,6 @@ docker run --rm \
     -v "$PWD/bench:/bench" \
     -v "$PWD/$BIN:/openfd:ro" \
     -v "$HYPERFINE:/hyperfine:ro" \
+    "${BASELINE[@]}" \
     ubuntu:26.04 \
     bash /bench/bench.sh
