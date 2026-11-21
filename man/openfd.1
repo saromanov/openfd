@@ -4,7 +4,7 @@
 .SH NAME
 openfd \- lsof that answers instantly: list open file descriptors of every process
 .SH SYNOPSIS
-\fBopenfd\fR [\fB\-p\fR|\fB\-\-pid\fR] [\fB\-c\fR|\fB\-\-command\fR] [\fB\-u\fR|\fB\-\-user\fR] [\fB\-f\fR|\fB\-\-fd\fR] [\fB\-\-path\fR] [\fB\-\-dir\fR] [\fB\-\-wait\fR] [\fB\-\-interval\fR] [\fB\-i\fR|\fB\-\-inet\fR] [\fB\-d\fR|\fB\-\-deleted\fR] [\fB\-t\fR|\fB\-\-terse\fR] [\fB\-s\fR|\fB\-\-summary\fR] [\fB\-\-tree\fR] [\fB\-\-top\fR] [\fB\-\-watch\fR] [\fB\-n\fR|\fB\-\-numeric\fR] [\fB\-\-nice\fR] [\fB\-\-sizes\fR] [\fB\-j\fR|\fB\-\-json\fR] [\fB\-\-csv\fR] [\fB\-\-color\fR] [\fB\-\-completions\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBopenfd\fR [\fB\-p\fR|\fB\-\-pid\fR] [\fB\-c\fR|\fB\-\-command\fR] [\fB\-u\fR|\fB\-\-user\fR] [\fB\-f\fR|\fB\-\-fd\fR] [\fB\-\-path\fR] [\fB\-\-dir\fR] [\fB\-\-wait\fR] [\fB\-\-interval\fR] [\fB\-i\fR|\fB\-\-inet\fR] [\fB\-d\fR|\fB\-\-deleted\fR] [\fB\-t\fR|\fB\-\-terse\fR] [\fB\-s\fR|\fB\-\-summary\fR] [\fB\-\-tree\fR] [\fB\-\-top\fR] [\fB\-\-watch\fR] [\fB\-n\fR|\fB\-\-numeric\fR] [\fB\-\-nice\fR] [\fB\-\-sizes\fR] [\fB\-j\fR|\fB\-\-json\fR] [\fB\-\-csv\fR] [\fB\-\-color\fR] [\fB\-\-completions\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 lsof that answers instantly: list open file descriptors of every process
 .SH OPTIONS
@@ -96,6 +96,13 @@ Print help
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
+.SH SUBCOMMANDS
+.TP
+openfd\-why(1)
+Explain who holds a path, mountpoint or port and how to release it
+.TP
+openfd\-help(1)
+Print this message or the help of the given subcommand(s)
 .SH EXTRA
 MVP covers the common 20% of lsof use cases. Run `openfd \-\-help` for details.
 .SH VERSION

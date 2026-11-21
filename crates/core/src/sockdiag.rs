@@ -237,6 +237,10 @@ pub struct SockTable {
     pub tcp: HashMap<u64, SockInfo>,
     pub udp: HashMap<u64, SockInfo>,
     pub unix: HashMap<u64, SockInfo>,
+    /// TIME_WAIT sockets per local port. They have inode 0 and no owning
+    /// process, so they cannot be joined to an fd; `why :PORT` reports the
+    /// count separately.
+    pub time_wait: HashMap<u16, u64>,
 }
 
 impl SockTable {
@@ -254,6 +258,11 @@ impl SockTable {
             .or_else(|| self.udp.get(&inode))
             .or_else(|| self.unix.get(&inode))
     }
+
+    /// TIME_WAIT sockets counted for one local port.
+    pub fn time_wait_for(&self, port: u16) -> u64 {
+        self.time_wait.get(&port).copied().unwrap_or(0)
+    }
 }
 
 /// Dump every visible socket via netlink. Errors are reported to the caller,
@@ -267,10 +276,10 @@ pub fn dump_all() -> std::io::Result<SockTable> {
 pub fn dump_scope(scope: SockScope) -> std::io::Result<SockTable> {
     let mut table = SockTable::default();
     if scope.tcp {
-        dump_inet(IPPROTO_TCP, &mut table.tcp)?;
+        dump_inet(IPPROTO_TCP, &mut table.tcp, &mut table.time_wait)?;
     }
     if scope.udp {
-        dump_inet(IPPROTO_UDP, &mut table.udp)?;
+        dump_inet(IPPROTO_UDP, &mut table.udp, &mut table.time_wait)?;
     }
     if scope.unix {
         dump_unix(&mut table.unix)?;
@@ -314,7 +323,11 @@ fn roundtrip(
     }
 }
 
-fn dump_inet(protocol: u8, out: &mut HashMap<u64, SockInfo>) -> std::io::Result<()> {
+fn dump_inet(
+    protocol: u8,
+    out: &mut HashMap<u64, SockInfo>,
+    table_time_wait: &mut HashMap<u16, u64>,
+) -> std::io::Result<()> {
     let sock = open_diag_socket()?;
     for family in [AF_INET, AF_INET6] {
         let req = nlmsg(
@@ -341,7 +354,14 @@ fn dump_inet(protocol: u8, out: &mut HashMap<u64, SockInfo>) -> std::io::Result<
                 dport,
                 inode,
             } = hdr;
-            if inode == 0 || (msg_family != AF_INET && msg_family != AF_INET6) {
+            if msg_family != AF_INET && msg_family != AF_INET6 {
+                return true;
+            }
+            if inode == 0 {
+                // TIME_WAIT and other orphaned states: no fd owns them.
+                if protocol == IPPROTO_TCP && state == TCP_TIME_WAIT {
+                    *table_time_wait.entry(sport).or_insert(0) += 1;
+                }
                 return true;
             }
             let id = &payload[4..4 + INET_DIAG_SOCKID_LEN];

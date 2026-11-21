@@ -1,7 +1,7 @@
 //! The clap `Args` definition, shared by the `openfd` binary, the man-page
 //! generator and shell completions.
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use crate::output::Format;
 
@@ -107,6 +107,51 @@ pub struct Args {
     /// Print a shell completion script (bash, zsh, fish, powershell) and exit
     #[arg(long = "completions", value_name = "SHELL")]
     pub completions: Option<clap_complete::Shell>,
+
+    #[command(subcommand)]
+    pub subcommand: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Explain who holds a path, mountpoint or port and how to release it
+    Why(WhyArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct WhyArgs {
+    /// File, directory, mountpoint, or socket spec (`:8080`, `tcp:8080`,
+    /// `udp:53`, `@127.0.0.1:8080`)
+    #[arg(value_name = "TARGET")]
+    pub target: String,
+
+    /// Treat a directory TARGET as a mount even when it is not a mountpoint
+    #[arg(long = "mount")]
+    pub mount: bool,
+
+    /// Do not print the "fix:" section
+    #[arg(long = "no-hints")]
+    pub no_hints: bool,
+
+    /// Skip cgroup -> unit/container resolution
+    #[arg(long = "no-owner")]
+    pub no_owner: bool,
+
+    /// Do not read /proc/<pid>/maps (mmap holders)
+    #[arg(long = "no-mmap")]
+    pub no_mmap: bool,
+
+    /// NDJSON output (one object per holder plus a summary object)
+    #[arg(short = 'j', long = "json")]
+    pub json: bool,
+
+    /// No username resolution in the JSON output
+    #[arg(short = 'n', long = "numeric")]
+    pub numeric: bool,
+
+    /// Print nothing, only set the exit code
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
 }
 
 impl Args {

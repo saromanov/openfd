@@ -87,6 +87,12 @@ pub struct FdEntry {
     pub inode: Option<u64>,
     /// st_mode of the underlying file.
     pub mode: Option<u32>,
+    /// st_dev of the underlying file (populated with `stat_all`).
+    pub dev: Option<u64>,
+    /// Mount id of the fd from `/proc/<pid>/fdinfo/<fd>` (Linux >= 3.15).
+    /// Lets mount-mode matching avoid a per-fd `stat`, which can block on a
+    /// dead network filesystem.
+    pub mnt_id: Option<u64>,
     /// Socket details, resolved by the netlink SOCK_DIAG backend when the
     /// entry is a socket and the table was dumped successfully.
     pub sock: Option<SockInfo>,
@@ -504,6 +510,8 @@ mod tests {
             flags: None,
             inode: None,
             mode: None,
+            dev: None,
+            mnt_id: None,
             sock: None,
         };
         assert!((opts.fd_filter.as_ref().unwrap())(&entry));

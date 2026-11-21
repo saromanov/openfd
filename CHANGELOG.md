@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com) and the project adheres
 to [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- `openfd why <path|dir|mountpoint|:port>`: explains who holds a resource,
+  how (`fd`, `cwd`, `root`, `exe`, `mmap`, lock, submount), which systemd
+  unit, user session, container or pod owns each pid (cgroup v1/v2), how many
+  deleted-but-open bytes are held, and what to do. Hints are printed, never
+  executed. `--json` emits one holder object per line plus a summary
+  (`docs/json.md`); exit codes follow `fuser`/`grep` (0/1/2) and `-q` only
+  sets the code.
+- Core: `owner::parse_cgroup`, `mounts::parse_mountinfo`,
+  `locks::parse_lock_line`, `target` detection, holder collection and the
+  hint rule table, all covered by unit tests.
+- `FdEntry::dev` and `FdEntry::mnt_id`: file identity and mount id for
+  mount-mode matching without `stat`.
+- `SockTable::time_wait`: TIME_WAIT sockets per local port.
+
+### Changed
+
+- The CLI accepts subcommands (`why`) while every existing flag keeps
+  working at the top level.
+- Mount mode matches fds by `mnt_id` and never `stat`s fds, so a dead
+  network filesystem cannot block the scan.
+
 ## [0.2.1] - 2026-11-18
 
 ### Fixed

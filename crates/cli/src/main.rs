@@ -12,12 +12,19 @@ use clap::Parser;
 use openfd_core::{Backend, FdEntry, FdSink, ProcessFilter, ProcessInfo, ScanOptions};
 
 use openfd::Args;
+use openfd::args::Command;
 use openfd::color::{ColorMode, Colors};
 use openfd::filters::Filters;
 use openfd::output::{Format, Printer};
 
 fn main() -> ExitCode {
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    if let Some(command) = args.subcommand.take() {
+        return match command {
+            Command::Why(why) => openfd::why::run(why),
+        };
+    }
 
     if let Some(shell) = args.completions {
         clap_complete::generate(
