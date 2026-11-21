@@ -2,3 +2,4 @@
 Cargo.lock.bak
 *.swp
 lcov.info
+__pycache__/

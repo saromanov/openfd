@@ -19,6 +19,22 @@ system, same minute, sequential runs of each binary.
 - Reproduce: `bench/run.sh 10000` (single), `bench/run.sh 10000 10` and
   `bench/run.sh 100000 100` (spread); see `bench/bench.sh` for the harness.
   The harness prints the exact lsof/lsfd revisions it measured.
+- Two extra scenarios cover tools with a narrower scope than a full fd
+  scan: sockets (`openfd -i` vs `lsof -i` vs `ss -tuanp`) and reverse
+  lookup by path (`openfd --path <file>` vs `lsof <file>` vs
+  `fuser -v <file>`). `ss` only lists sockets and `fuser` answers "who
+  holds this file", so neither is comparable with an fd scan of one
+  process.
+
+## CI
+
+`.github/workflows/bench.yml` runs the same container harness on every
+pull request with `LOAD=10000 MULTI_PROCS=10`: lsof, lsfd, ss and fuser
+come from the ubuntu:26.04 packages, openfd is the static musl build of
+the PR. Results are posted to the job summary and uploaded as the
+`bench-results` artifact. GitHub-hosted runners share CPU, so treat the
+numbers as a trend, not a gate: compare the openfd/lsof ratio between
+runs rather than absolute times.
 
 ## Results
 
