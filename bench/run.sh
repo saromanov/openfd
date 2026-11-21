@@ -7,6 +7,9 @@
 # loader processes sharing the fds (default 1; 100 gives a realistic
 # multi-process desktop shape and exercises the parallel scan).
 #
+# Measures openfd against lsof, lsfd, ss and fuser (full scan, filtered
+# scan, sockets, reverse lookup by path).
+#
 # Results land in bench/results/ (JSON, hyperfine text, RSS).
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -1,0 +1,53 @@
+name: benchmarks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: openfd vs lsof / lsfd / ss / fuser
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine
+      - name: Build (static)
+        run: cargo build --release --locked -p openfd --target x86_64-unknown-linux-musl
+      - name: Run benchmarks in ubuntu:26.04
+        env:
+          LOAD: "10000"
+          MULTI_PROCS: "10"
+        run: |
+          rm -f bench/results/*.json bench/results/*.txt
+          docker run --rm --pid=host --network=host \
+            -e LOAD="$LOAD" \
+            -e MULTI_PROCS="$MULTI_PROCS" \
+            -v "$PWD/bench:/bench" \
+            -v "$PWD/target/x86_64-unknown-linux-musl/release/openfd:/openfd:ro" \
+            -v "$(command -v hyperfine):/hyperfine:ro" \
+            ubuntu:26.04 bash /bench/bench.sh
+      - name: Job summary
+        if: always()
+        run: python3 bench/summary.py >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bench-results
+          path: bench/results/
