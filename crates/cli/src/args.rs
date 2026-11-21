@@ -116,6 +116,8 @@ pub struct Args {
 pub enum Command {
     /// Explain who holds a path, mountpoint or port and how to release it
     Why(WhyArgs),
+    /// Detect fd leaks over time with limit awareness and ETA to EMFILE
+    Leak(LeakArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -152,6 +154,57 @@ pub struct WhyArgs {
     /// Print nothing, only set the exit code
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct LeakArgs {
+    /// Comma-separated pids to watch
+    #[arg(short = 'p', long = "pid", value_name = "PID[,PID]...")]
+    pub pid: Option<String>,
+
+    /// Comma-separated command names to watch
+    #[arg(short = 'c', long = "command", value_name = "NAME[,NAME]...")]
+    pub command: Option<String>,
+
+    /// Comma-separated users (names or uids) to watch
+    #[arg(short = 'u', long = "user", value_name = "USER[,USER]...")]
+    pub user: Option<String>,
+
+    /// Sampling interval (`500ms`, `5s`, `1m`)
+    #[arg(long = "interval", value_name = "DURATION", default_value = "5s")]
+    pub interval: String,
+
+    /// Observe for this long, then print a report and exit
+    #[arg(long = "duration", value_name = "DURATION", default_value = "60s")]
+    pub duration: String,
+
+    /// Run until interrupted; print a report every --duration window
+    #[arg(long = "follow")]
+    pub follow: bool,
+
+    /// Minimum samples before a verdict
+    #[arg(long = "min-samples", value_name = "N", default_value = "6")]
+    pub min_samples: usize,
+
+    /// Ignore growth below N fd/min
+    #[arg(long = "min-rate", value_name = "N", default_value = "1")]
+    pub min_rate: f64,
+
+    /// Report at most N leaking processes
+    #[arg(long = "top", value_name = "N", default_value = "5")]
+    pub top: usize,
+
+    /// Exit 3 when a process will hit its fd limit within DURATION
+    #[arg(long = "fail-if-eta", value_name = "DURATION")]
+    pub fail_if_eta: Option<String>,
+
+    /// NDJSON report
+    #[arg(short = 'j', long = "json")]
+    pub json: bool,
+
+    /// Run at this nice value (0-19) for long observations
+    #[arg(long = "nice", value_name = "N", value_parser = clap::value_parser!(i8).range(0..=19))]
+    pub nice: Option<i8>,
 }
 
 impl Args {

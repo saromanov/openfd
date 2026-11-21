@@ -7,9 +7,10 @@ argument.
 ## Next
 
 - **crates.io publish** — `cargo install openfd` as the first-class install path.
-- **Container awareness** — pid → cgroup v2 → container id (containerd/Docker/podman)
-  → container name in the output. In the k8s world lsof showing a bare pid is
-  half an answer; nobody else answers "whose container is this fd in?".
+- **Container names** — `openfd why` already maps pid → cgroup v1/v2 →
+  systemd unit, session, containerd/Docker/Podman container or k8s pod id.
+  The remaining work is best-effort name lookup from local runtime state
+  files (`/var/lib/docker/containers/<id>/config.v2.json`), behind a flag.
 - **deb/rpm packages** — via `cargo-deb`/`cargo-rpm` after launch, so apt/dnf
   users get updates without a package-manager fight.
 

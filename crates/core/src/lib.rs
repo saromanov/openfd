@@ -15,6 +15,7 @@ mod classify;
 
 pub mod hints;
 pub mod holders;
+pub mod leak;
 pub mod locks;
 pub mod mounts;
 pub mod owner;
@@ -26,6 +27,7 @@ pub mod types;
 
 pub use hints::{Hint, build_hints};
 pub use holders::{CollectOptions, Holder, HolderKind, HolderReport, collect};
+pub use leak::{Fit, Sample, eta_seconds, fd_signature, linear_fit, parse_limits, verdict};
 pub use locks::{LockKind, LockMode, LockRecord, parse_lock_line};
 pub use mounts::{MountEntry, parse_mountinfo};
 pub use owner::{Owner, OwnerKind, parse_cgroup};
