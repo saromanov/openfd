@@ -71,3 +71,56 @@ Optional fields are omitted, never emitted as `null`.
 | `0` | at least one holder found |
 | `1` | nothing holds the target |
 | `2` | error (bad target, `/proc` unavailable) |
+
+## `openfd leak --json`
+
+A stream of **leak** objects (one per leaking process, closest ETA first)
+followed by exactly one **summary** object.
+
+### leak
+
+```json
+{"type":"leak","pid":3120,"comm":"java","user":"sergey",
+ "owner":{"kind":"systemd_unit","name":"orders.service"},
+ "fds":8412,"limit":65536,"rate_per_min":38.2,"r2":0.97,
+ "eta_seconds":89700,
+ "verdict":"CLOSE-WAIT accumulation: the application never closes accepted sockets (check response and error paths)",
+ "breakdown":[{"signature":"tcp -> 10.0.0.5 CLOSE-WAIT","delta":171}]}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | Always `leak`. |
+| `pid` / `comm` / `user` | | Process identity; `user` is a name or the uid. |
+| `owner` | object? | `{"kind":...,"name":...}`; omitted when unresolved. |
+| `fds` | number | Latest fd count. |
+| `limit` | number? | Soft `RLIMIT_NOFILE`; omitted when unreadable. |
+| `rate_per_min` | number | Least-squares growth, fd per minute. |
+| `r2` | number | Fit quality, `0.0`..=`1.0`. `>= 0.8` is reported as `steady`. |
+| `eta_seconds` | number? | Seconds to `EMFILE` at the current rate (0 when already at the limit). |
+| `verdict` | string | Likely bug for the dominant signature. |
+| `breakdown` | array | Up to five `{"signature","delta"}` rows, largest growth first. |
+
+### summary
+
+```json
+{"type":"summary","processes":312,"samples":30,"window_seconds":300,
+ "leaking":1,"worst_eta_seconds":89700}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `processes` | number | Peak number of processes observed in the window. |
+| `samples` | number | Snapshots taken. |
+| `window_seconds` | number | Measured wall-clock length of the window. |
+| `leaking` | number | Reported leaks (after `--top`). |
+| `worst_eta_seconds` | number? | Smallest ETA among the reported leaks. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | no leak detected |
+| `1` | leak detected (growth above `--min-rate`) |
+| `2` | error |
+| `3` | `--fail-if-eta` threshold breached (takes priority over `1`) |

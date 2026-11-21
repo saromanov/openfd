@@ -111,6 +111,8 @@ openfd [OPTIONS]
 Subcommands:
   why <TARGET>            explain who holds a file, directory, mountpoint or
                           port, and how to release it (read-only)
+  leak [FILTERS]          watch fds over time: growth rate, ETA to EMFILE,
+                          what is growing and why (read-only)
 ```
 
 Groups of the same kind are OR-composed (like lsof), different groups AND-composed:
@@ -130,6 +132,8 @@ openfd --tree -c nginx         # fds grouped under each nginx worker
 openfd why /mnt/data           # who keeps the mount busy, and what to restart
 openfd why :8080               # which unit/container owns the port
 openfd why /var                # deleted-but-open files holding disk space
+openfd leak --duration 5m      # who leaks fds, how fast, and how soon EMFILE
+openfd leak -c java --json     # scheduling/monitoring mode
 ```
 
 ### `openfd why`: who holds it, and what to do
@@ -165,6 +169,40 @@ hints with a reason. Hints are **never executed**. Mount targets match by
 `1` nothing holds the target, `2` error. `-q` prints nothing and only sets
 the code.
 
+### `openfd leak`: how soon will it hit `EMFILE`?
+
+An fd leak surfaces as `accept(): Too many open files` at 3 a.m. `openfd
+leak` replaces the usual `while sleep 10; do ls /proc/$PID/fd | wc -l; done`
+script with limit-aware diagnosis:
+
+```console
+$ openfd leak -c orders --interval 10s --duration 5m
+observed 312 processes for 5m (30 samples); 1 leaking
+
+pid 3120  java  (sergey, orders.service)
+  fds        8 412 / 65 536 soft limit  (12.8%)
+  growth     +38.2 fd/min  (steady, R²=0.97)
+  ETA        ~24h 55m to EMFILE
+  breakdown  (new fds since start, by signature)
+    +171   tcp -> 10.0.0.5 CLOSE-WAIT
+  verdict    CLOSE-WAIT accumulation: the application never closes accepted
+             sockets (check response and error paths)
+```
+
+- **Robust growth**: least-squares fit over the whole window with R², not a
+  two-sample delta; flat/sawtooth pools stay quiet.
+- **Limit aware**: compares against the soft `RLIMIT_NOFILE` from
+  `/proc/<pid>/limits` and computes the ETA.
+- **What grows**: new fds grouped by signature - peer address + TCP state,
+  normalized path, `anon_inode` subtype - so 171 CLOSE_WAIT sockets become
+  one row.
+- **Why**: a verdict names the likely bug.
+- **Monitoring mode**: `--json` NDJSON; exit `0` no leak, `1` leak, `2`
+  error, `3` `--fail-if-eta` breached (for example `--fail-if-eta 24h`).
+- Durations accept `500ms`, `30s`, `5m`, `2h`, `1d`.
+
+The report is read-only: nothing is restarted, killed or truncated.
+
 Long scans from cron or monitoring benefit from `--nice 19`: the scan keeps
 its wall-clock speed but yields the CPU whenever anything else wants it.
 
@@ -183,6 +221,7 @@ It competes on the questions you actually ask, answered instantly:
 | `--watch` live diff (+/− per fd) | yes | no | no |
 | `--top` fd-leak detector | yes | no | no |
 | `why` (owner + hint for busy paths/ports) | yes | no | no |
+| `leak` (growth, R², ETA to EMFILE, verdict) | yes | no | no |
 | `--wait` (block until released) | yes | no | no |
 | `--deleted` + reclaimable bytes | yes | lists, no byte total | no |
 | Per-process summary / process tree | yes | no | no |

@@ -22,10 +22,20 @@ to [Semantic Versioning](https://semver.org).
   mount-mode matching without `stat`.
 - `SockTable::time_wait`: TIME_WAIT sockets per local port.
 
+- `openfd leak [FILTERS]`: watches fds over time and diagnoses growth:
+  least-squares rate with R² against the soft `RLIMIT_NOFILE`, ETA to
+  `EMFILE`, new-fd breakdown by signature (peer address + TCP state,
+  normalized path, `anon_inode` subtype) and a verdict naming the likely
+  bug. `--json` NDJSON; exit codes 0/1/2/3 (`--fail-if-eta`); durations
+  accept `500ms`..`1d`; `--follow` repeats the report per window.
+- Core: `leak` module with `linear_fit`, `eta_seconds`, `parse_limits`,
+  `fd_signature`, `verdict` and `dominant`, all unit-tested.
+
 ### Changed
 
-- The CLI accepts subcommands (`why`) while every existing flag keeps
-  working at the top level.
+- The CLI accepts subcommands (`why`, `leak`) while every existing flag
+  keeps working at the top level. `--nice` is applied before a subcommand
+  runs; `leak` also takes its own `--nice`.
 - Mount mode matches fds by `mnt_id` and never `stat`s fds, so a dead
   network filesystem cannot block the scan.
 

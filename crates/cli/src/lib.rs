@@ -5,6 +5,7 @@
 pub mod args;
 pub mod color;
 pub mod filters;
+pub mod leak;
 pub mod output;
 pub mod why;
 
