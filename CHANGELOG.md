@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com) and the project adheres
 to [Semantic Versioning](https://semver.org).
 
+## [0.3.1] - 2026-11-25
+
+### Changed
+
+- Documentation: README now has a permissions section (what is visible unprivileged,
+  with `sudo`/`CAP_SYS_PTRACE`, under `hidepid=2`), states the unsafe claim
+  precisely (core is unsafe-free; the CLI's only unsafe code is the two
+  `setpriority` calls behind `--nice`), and gives the conditions behind the
+  lsof desktop number (network mounts in mountinfo, `D`-state processes,
+  `lsof -t -n -P`). BENCHMARKS.md documents the output-mode effect: the
+  figures are `-n` scans; `-j` keeps a fixed ~15 MiB buffer and is ~2x
+  slower at 100k fds.
+
 ## [0.3.0] - 2026-11-24
 
 ### Added
