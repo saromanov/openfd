@@ -46,8 +46,9 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
   measurements: [BENCHMARKS.md](BENCHMARKS.md) — 100k fds: openfd
   0.71 s / 3 MiB (0.48 s spread across 100 processes) vs lsof 2.0 s / 42 MiB
   vs lsfd 2.8 s / 140 MiB.
-- **No unsafe in our code, no network.** The core and CLI are pure safe
-  Rust (`std` only). The one dependency with system access is
+- **No unsafe in the core, no network.** The core is pure safe Rust
+  (`std` only). The CLI's only unsafe code is the two `setpriority` calls
+  behind `--nice`. The one dependency with system access is
   [`netlink-sys`](https://crates.io/crates/netlink-sys), used for a single
   netlink SOCK_DIAG socket; everything else is `readlink`, `fdinfo`, `stat`.
   No DNS, no downloads, static binary, no runtime dependencies.

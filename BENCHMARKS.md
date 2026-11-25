@@ -90,6 +90,10 @@ Notes:
   previous ubuntu:24.04 setup (810 → 205 ms at 10k single), so the ratios
   above are tighter than they used to be — and still 2.7–6.2x with
   2–45x less memory.
+- Output mode matters: the figures above are `-n` scans. `-j` (NDJSON)
+  keeps a fixed ~15 MiB output buffer that does not grow with the fd
+  count, and is roughly 2x slower at 100 000 fds (~1.5–1.9 s) — JSON
+  serialization, not scanning, drives both.
 - Filtered scans are near-instant because the filters are pushed into the
   scan: non-matching processes never get their fd directory opened, and
   the socket dump is restricted to the protocol the `-i` filter asks for.
