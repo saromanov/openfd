@@ -38,13 +38,19 @@ openfd: 168 deleted file(s) hold 342770063 reclaimable bytes
   Rows of one process stay ordered; on multi-core scans rows of different
   processes may interleave.
 - **Fast.** On a desktop with ~300 processes, a full terse scan (`-t -n`)
-  takes ~20 ms wall clock; the same `lsof -t -n` takes ~6.6 s on the same box.
-  Controlled measurements: [BENCHMARKS.md](BENCHMARKS.md) — 100k fds: openfd
+  takes ~20 ms wall clock; the same `lsof -t -n -P` takes ~6.6 s on the same
+  box. That lsof number is not a controlled run: the desktop's `mountinfo`
+  lists network mounts and a few processes sit in uninterruptible (`D`)
+  state, which lsof resolves before it answers. In the controlled container
+  without network mounts, lsof takes 2.0 s at 100k fds. Controlled
+  measurements: [BENCHMARKS.md](BENCHMARKS.md) — 100k fds: openfd
   0.71 s / 3 MiB (0.48 s spread across 100 processes) vs lsof 2.0 s / 42 MiB
   vs lsfd 2.8 s / 140 MiB.
-- **Zero unsafe, zero network.** Pure `std` in the core plus one netlink
-  library: `readlink`, `fdinfo`, `stat`, netlink SOCK_DIAG. No DNS, no
-  downloads, static binary, no runtime dependencies.
+- **No unsafe in our code, no network.** The core and CLI are pure safe
+  Rust (`std` only). The one dependency with system access is
+  [`netlink-sys`](https://crates.io/crates/netlink-sys), used for a single
+  netlink SOCK_DIAG socket; everything else is `readlink`, `fdinfo`, `stat`.
+  No DNS, no downloads, static binary, no runtime dependencies.
 - **Reclaimable bytes.** `--deleted` is not just a list — it sums the disk
   space held by unlinked-but-open files (the "why didn't the disk free up
   after I deleted the log" case).
@@ -246,6 +252,30 @@ This MVP covers the common 20% of the lsof surface. **Not yet implemented**
 details and macOS support (Linux-only for now). If a flag is missing,
 `openfd` exits with an error — scripts should keep lsof until the flag they
 need lands.
+
+## Permissions: what you can see as whom
+
+openfd reads `/proc` and one netlink socket — so its visibility is exactly
+the kernel's, no more:
+
+| How openfd runs | What it sees |
+|---|---|
+| as your user | fds and sockets of **your own** processes only |
+| `sudo openfd` / `CAP_SYS_PTRACE` | every user's fds and the full socket table |
+| `/proc` mounted with `hidepid=2` | same as unprivileged; `sudo` still sees everything |
+
+- **Unprivileged.** `/proc/<pid>/fd` is readable only when the kernel grants
+  ptrace access, so scans cover your own processes. The netlink SOCK_DIAG
+  dump is filtered the same way: the kernel returns only your own sockets.
+  If a source is inaccessible, openfd degrades gracefully — it prints what
+  it can instead of failing.
+- **With sudo / `CAP_SYS_PTRACE`.** Every process' fds become readable and
+  the SOCK_DIAG dump returns sockets of all users. Endpoints and TCP states
+  for other users' sockets come from that one bulk netlink dump, joined to
+  fds by socket inode — no shell pipelines over `ss`/`lsof`.
+- **`hidepid=2`.** Other users' `/proc/<pid>` entries disappear entirely.
+  Unprivileged behavior does not change (it was already own-processes-only);
+  running under `sudo` still sees the whole system.
 
 ## Architecture
 
